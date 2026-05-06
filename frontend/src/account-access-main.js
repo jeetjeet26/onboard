@@ -25,7 +25,7 @@ import { applyRoleChrome, consumeRedirectNotice, renderNotice } from "./navigati
 import { escapeHtml, sanitizeUrl } from "./utils/sanitize.js";
 
 const PLATFORM_GUIDES = {
-  "Google Ads Manager": "https://backstage.p11.com/marketing/kb/google-ads-admin-access/",
+  "Google Ads Manager": "https://backstage.p11.com/marketing/kb/google-ads/",
   "Google Analytics 4 (GA4)": "https://backstage.p11.com/marketing/kb/google-analytics/",
   "Google Tag Manager (GTM)": "https://backstage.p11.com/marketing/kb/add-user-to-gtm-account/",
   "Google Search Console": "https://backstage.p11.com/marketing/kb/search-console/",
@@ -34,12 +34,12 @@ const PLATFORM_GUIDES = {
     "https://backstage.p11.com/marketing/kb/grant-social-media-partner-access/",
   "Meta Ads Manager":
     "https://backstage.p11.com/marketing/kb/grant-social-media-partner-access/",
-  "LinkedIn Ads": "https://backstage.p11.com/marketing/kb/linkedin-ads-admin-access/",
-  "Email Marketing Platform": "https://backstage.p11.com/marketing/kb/email-marketing-access/",
-  "Website CMS (login credentials)": "https://backstage.p11.com/marketing/kb/website-credentials/",
-  "CRM Platform": "https://backstage.p11.com/marketing/kb/crm-access/",
-  "ILS Platform (Zillow / CoStar)": "https://backstage.p11.com/marketing/kb/ils-access/",
-  "Payment Methods": "https://backstage.p11.com/marketing/kb/payment-method-setup/",
+  "LinkedIn Ads": "https://backstage.p11.com/marketing/kb/grant-social-media-partner-access/",
+  "Email Marketing Platform": "https://backstage.p11.com/marketing/kb/",
+  "Website CMS (login credentials)": "https://backstage.p11.com/marketing/kb/",
+  "CRM Platform": "https://backstage.p11.com/marketing/kb/",
+  "ILS Platform (Zillow / CoStar)": "https://backstage.p11.com/marketing/kb/",
+  "Payment Methods": "https://backstage.p11.com/marketing/kb/",
 };
 const state = {
   session: null,
