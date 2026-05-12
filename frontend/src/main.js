@@ -81,6 +81,16 @@ const PLATFORM_WORKFLOW_OPTIONS = [
   "Blocked",
 ];
 
+const CREATIVE_STATUS_OPTIONS = [
+  "Not Started",
+  "Gathering Assets",
+  "Creative Direction",
+  "Concepts In Progress",
+  "Ready for Internal Review",
+  "Ready for Client Review",
+  "Approved",
+];
+
 const SERVICE_PLATFORM_MAP = {
   paid_search: { code: "google_ads", label: "Google Ads" },
   paid_social: { code: "meta_ads", label: "Meta Ads" },
@@ -595,6 +605,14 @@ function navigateToStageSection(stageCode) {
     return;
   }
 
+  if (stageCode === "creative_kickoff") {
+    const target = document.body.classList.contains("int")
+      ? document.getElementById("internalCreativeControls")?.closest(".int-section")
+      : document.getElementById("clientCreativeSummary")?.closest(".workflow-section");
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+
   document.querySelector(".tracker-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -1075,6 +1093,10 @@ function defaultWorkflowState() {
     platforms,
     approvalStatus: "pending",
     approvalNotes: "",
+    creativeStatus: "Gathering Assets",
+    creativeDueDate: "",
+    creativeAssetUrl: "",
+    creativeNotes: "P11creative is reviewing intake responses, brand assets, and platform requirements before preparing creative direction.",
     launchAuthorized: false,
     launchAuthorizedAt: null,
     launchDate: "",
@@ -1150,6 +1172,8 @@ function renderWorkflowSurfaces() {
     code,
     ...platform,
   }));
+  renderClientCreativeDevelopment(workflow);
+  renderInternalCreativeDevelopment(workflow);
   renderClientWorkflow(workflow, platforms);
   renderInternalWorkflow(workflow, platforms);
   updateWorkflowStagePresentation(workflow, platforms);
@@ -1179,6 +1203,78 @@ function previewLinkMarkup(url) {
   return safeUrl
     ? `<a class="workflow-link" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">Open Preview</a>`
     : `<span style="color:var(--gray-light);font-weight:800;">Preview pending</span>`;
+}
+
+function renderClientCreativeDevelopment(workflow) {
+  const summary = document.getElementById("clientCreativeSummary");
+  if (!summary) return;
+  const assetUrl = sanitizeUrl(workflow.creativeAssetUrl);
+  summary.innerHTML = `
+    <div class="workflow-card-list">
+      <div class="workflow-card-row">
+        <div>
+          <div class="workflow-name">Creative Development Status</div>
+          <div class="workflow-meta">${escapeHtml(workflow.creativeNotes || "P11creative is preparing campaign direction and ad preview materials.")}</div>
+        </div>
+        <span class="workflow-status ${workflowStatusClass(workflow.creativeStatus)}">${escapeHtml(workflow.creativeStatus || "In Progress")}</span>
+      </div>
+      <div class="workflow-card-row">
+        <div>
+          <div class="workflow-name">Creative Review Materials</div>
+          <div class="workflow-meta">${assetUrl ? `<a class="workflow-link" href="${escapeHtml(assetUrl)}" target="_blank" rel="noopener noreferrer">Open Creative Folder</a>` : "Review links will appear here when P11creative is ready for client feedback."}</div>
+        </div>
+        <span class="workflow-status ${workflow.creativeDueDate ? "approved" : ""}">${escapeHtml(workflow.creativeDueDate || "TBD")}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderInternalCreativeDevelopment(workflow) {
+  const controls = document.getElementById("internalCreativeControls");
+  if (!controls) return;
+  controls.innerHTML = `
+    <div class="workflow-grid">
+      <div class="workflow-panel">
+        <div class="workflow-title">Creative Status</div>
+        <div class="workflow-copy">Manage Step 4 before platform build begins. Client-facing status mirrors these fields.</div>
+        <div class="workflow-controls">
+          <label>Status
+            <select data-workflow-field="creativeStatus">
+              ${CREATIVE_STATUS_OPTIONS.map((option) => `<option value="${escapeHtml(option)}" ${option === workflow.creativeStatus ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+            </select>
+          </label>
+          <label>Target Review Date
+            <input data-workflow-field="creativeDueDate" type="date" value="${escapeHtml(workflow.creativeDueDate || "")}" />
+          </label>
+          <label>Creative Folder / Preview Link
+            <input data-workflow-field="creativeAssetUrl" type="url" value="${escapeHtml(workflow.creativeAssetUrl || "")}" placeholder="https://..." />
+          </label>
+          <label>Client-Facing Notes
+            <textarea data-workflow-field="creativeNotes" rows="3">${escapeHtml(workflow.creativeNotes || "")}</textarea>
+          </label>
+        </div>
+      </div>
+      <div class="workflow-panel">
+        <div class="workflow-title">Step 4 Flow</div>
+        <div class="workflow-card-list">
+          <div class="workflow-card-row">
+            <div>
+              <div class="workflow-name">Input Source</div>
+              <div class="workflow-meta">Uses the submitted intake, uploaded brand assets, platform scope, and quick links for this community.</div>
+            </div>
+            <span class="workflow-status approved">Ready</span>
+          </div>
+          <div class="workflow-card-row">
+            <div>
+              <div class="workflow-name">Next Handoff</div>
+              <div class="workflow-meta">Move to Step 5 by setting platform build statuses once creative direction or previews are ready.</div>
+            </div>
+            <span class="workflow-status ${workflowStatusClass(workflow.creativeStatus)}">${escapeHtml(workflow.creativeStatus || "In Progress")}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderClientWorkflow(workflow, platforms) {
@@ -1354,6 +1450,8 @@ function updateWorkflowFromInput(input) {
       ...(workflow.platforms[code] || { label: code }),
       [field]: input.value,
     };
+  } else {
+    workflow[field] = input.value;
   }
   saveWorkflowState();
   renderWorkflowSurfaces();

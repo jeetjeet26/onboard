@@ -159,6 +159,30 @@
       letter-spacing: 0.05em;
       font-family: inherit;
     }
+    .view-toggle {
+      display: flex;
+      background: rgba(255, 255, 255, 0.07);
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .toggle-btn {
+      padding: 8px 16px;
+      border: none;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.45);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+      transition: all 0.2s;
+      font-family: inherit;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .toggle-btn.active {
+      background: var(--red);
+      color: white;
+    }
 
     .client-bar {
       background: white;
@@ -520,6 +544,8 @@
       color: var(--charcoal);
       background: var(--white);
     }
+    .internal-step4-link { display: none; }
+    body.internal-user .internal-step4-link { display: inline-flex; }
 
     @media (max-width: 768px) {
       .header { padding: 14px 20px; flex-wrap: wrap; gap: 12px; }
@@ -554,6 +580,10 @@
       </nav>
     </div>
     <div class="header-right">
+      <div class="view-toggle" aria-label="Portal view toggle">
+        <button class="toggle-btn active" id="clientToggleBtn" type="button">Client View</button>
+        <button class="toggle-btn" id="teamToggleBtn" type="button" style="display:none;">Team View</button>
+      </div>
       <span class="session-info" id="sessionInfo"></span>
       <button class="logout-btn" id="logoutBtn" type="button">Log Out</button>
     </div>
@@ -647,6 +677,7 @@
 
       <div class="footer-links">
         <a class="link-btn secondary" id="accountAccessBackLink" href="/p11-onboarding-dashboard.html">Back to Step 2 Intake</a>
+        <a class="link-btn primary internal-step4-link" id="manageStep4Link" href="/p11-onboarding-dashboard.html">Manage Step 4 in Team View</a>
         <a class="link-btn primary" id="accountAccessReturnLink" href="/p11-onboarding-dashboard.html">Return to Dashboard</a>
       </div>
     </section>

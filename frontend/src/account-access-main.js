@@ -52,6 +52,7 @@ const state = {
   hasUnsavedChanges: false,
   savingProgress: false,
 };
+const DASHBOARD_VIEW_PREF_KEY = "p11_dashboard_view";
 
 function slugify(value) {
   return String(value || "")
@@ -144,6 +145,26 @@ function applyRoleNavigation() {
   if (returnLink) {
     returnLink.setAttribute("href", isInternalRole ? "/internal.html" : "/p11-onboarding-dashboard.html");
     returnLink.textContent = isInternalRole ? "Return to Internal Home" : "Return to Dashboard";
+  }
+  updateRoleViewControls(isInternalRole);
+}
+
+function openDashboardTeamView() {
+  try {
+    sessionStorage.setItem(DASHBOARD_VIEW_PREF_KEY, "internal");
+  } catch (_error) {
+    // The dashboard will still load; it just cannot preselect Team View.
+  }
+  window.location.href = "/p11-onboarding-dashboard.html";
+}
+
+function updateRoleViewControls(isInternalRole) {
+  const clientToggleBtn = document.getElementById("clientToggleBtn");
+  const teamToggleBtn = document.getElementById("teamToggleBtn");
+  if (clientToggleBtn) clientToggleBtn.classList.add("active");
+  if (teamToggleBtn) {
+    teamToggleBtn.style.display = isInternalRole ? "inline-flex" : "none";
+    teamToggleBtn.classList.remove("active");
   }
 }
 
@@ -527,6 +548,16 @@ function bindHandlers() {
 
   document.getElementById("saveProgressBtn")?.addEventListener("click", async () => {
     await savePlatformProgress();
+  });
+
+  document.getElementById("clientToggleBtn")?.addEventListener("click", () => {
+    updateRoleViewControls(["internal", "admin"].includes(state.portalContext?.portal_role || ""));
+  });
+
+  document.getElementById("teamToggleBtn")?.addEventListener("click", openDashboardTeamView);
+  document.getElementById("manageStep4Link")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    openDashboardTeamView();
   });
 }
 
