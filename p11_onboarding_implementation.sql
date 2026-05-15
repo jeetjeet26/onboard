@@ -2618,6 +2618,21 @@ create table if not exists onboarding.internal_signup_invite (
   constraint internal_signup_invite_role_check check (portal_role in ('internal', 'admin'))
 );
 
+create table if not exists onboarding.client_signup_invite (
+  id bigint generated always as identity primary key,
+  invite_token_hash text not null unique,
+  invited_email text not null,
+  invited_full_name text,
+  onboarding_client_id bigint not null references onboarding.onboarding_client(id) on delete cascade,
+  invited_by_auth_user_id uuid not null,
+  expires_at timestamptz,
+  redeemed_at timestamptz,
+  redeemed_by_auth_user_id uuid,
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists idx_internal_user_access_role
   on onboarding.internal_user_access(portal_role);
 
@@ -2627,7 +2642,19 @@ create index if not exists idx_internal_signup_invite_email
 create index if not exists idx_internal_signup_invite_expires_at
   on onboarding.internal_signup_invite(expires_at);
 
+create index if not exists idx_client_signup_invite_email
+  on onboarding.client_signup_invite(lower(invited_email));
+
+create index if not exists idx_client_signup_invite_client_id
+  on onboarding.client_signup_invite(onboarding_client_id);
+
+create index if not exists idx_client_signup_invite_expires_at
+  on onboarding.client_signup_invite(expires_at);
+
 alter table onboarding.internal_signup_invite
+  alter column expires_at drop not null;
+
+alter table onboarding.client_signup_invite
   alter column expires_at drop not null;
 
 drop trigger if exists trg_internal_user_access_updated_at on onboarding.internal_user_access;
@@ -2639,6 +2666,26 @@ drop trigger if exists trg_internal_signup_invite_updated_at on onboarding.inter
 create trigger trg_internal_signup_invite_updated_at
 before update on onboarding.internal_signup_invite
 for each row execute function onboarding.tg_set_updated_at();
+
+drop trigger if exists trg_client_signup_invite_updated_at on onboarding.client_signup_invite;
+create trigger trg_client_signup_invite_updated_at
+before update on onboarding.client_signup_invite
+for each row execute function onboarding.tg_set_updated_at();
+
+alter table onboarding.client_signup_invite enable row level security;
+
+drop policy if exists client_signup_invite_select_internal_policy on onboarding.client_signup_invite;
+create policy client_signup_invite_select_internal_policy
+on onboarding.client_signup_invite
+for select
+using (onboarding.is_internal_user());
+
+drop policy if exists client_signup_invite_modify_internal_policy on onboarding.client_signup_invite;
+create policy client_signup_invite_modify_internal_policy
+on onboarding.client_signup_invite
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
 
 alter table onboarding.onboarding_client
   add column if not exists company_directory_id bigint references onboarding.company_directory(id) on delete set null,
@@ -3840,6 +3887,339 @@ begin
     'portal_role', v_role,
     'email', v_session_email,
     'auth_user_id', v_auth_user_id
+  );
+end;
+$$;
+
+create or replace function public.get_client_signup_invite(
+  p_invite_token text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_token text := trim(coalesce(p_invite_token, ''));
+  v_token_hash text;
+  v_invite onboarding.client_signup_invite%rowtype;
+  v_company_name text;
+  v_community_name text;
+begin
+  if v_token = '' then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+
+  v_token_hash := encode(extensions.digest(v_token, 'sha256'), 'hex');
+
+  select *
+  into v_invite
+  from onboarding.client_signup_invite i
+  where i.invite_token_hash = v_token_hash
+  limit 1;
+
+  if not found then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+
+  if v_invite.redeemed_at is not null then
+    return jsonb_build_object('status', 'invalid');
+  end if;
+
+  if v_invite.expires_at is not null and v_invite.expires_at < now() then
+    return jsonb_build_object('status', 'expired');
+  end if;
+
+  select
+    coalesce(cd.company_name, pc."Name"),
+    c.display_name
+  into v_company_name, v_community_name
+  from onboarding.onboarding_client c
+  left join onboarding.company_directory cd on cd.id = c.company_directory_id
+  left join public."Company" pc on pc."ID" = c.company_id
+  where c.id = v_invite.onboarding_client_id;
+
+  return jsonb_build_object(
+    'status', 'ok',
+    'invite_id', v_invite.id,
+    'invited_email', v_invite.invited_email,
+    'invited_full_name', v_invite.invited_full_name,
+    'portal_role', 'client',
+    'onboarding_client_id', v_invite.onboarding_client_id,
+    'company_name', v_company_name,
+    'community_name', v_community_name,
+    'expires_at', v_invite.expires_at
+  );
+end;
+$$;
+
+create or replace function public.create_client_signup_invite(
+  p_onboarding_client_id bigint,
+  p_email text,
+  p_full_name text default null,
+  p_expires_in_hours integer default null,
+  p_invite_base_url text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_auth_user_id uuid := auth.uid();
+  v_email text := lower(trim(coalesce(p_email, '')));
+  v_full_name text := nullif(trim(coalesce(p_full_name, '')), '');
+  v_expires_at timestamptz := null;
+  v_token text;
+  v_token_hash text;
+  v_invite_id bigint;
+  v_base_url text;
+  v_invite_url text;
+  v_client onboarding.onboarding_client%rowtype;
+  v_company_name text;
+begin
+  if v_auth_user_id is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+
+  if not onboarding.is_internal_user() then
+    raise exception 'Internal access required' using errcode = '42501';
+  end if;
+
+  if p_onboarding_client_id is null then
+    raise exception 'Onboarding client is required';
+  end if;
+
+  select *
+  into v_client
+  from onboarding.onboarding_client c
+  where c.id = p_onboarding_client_id;
+
+  if not found then
+    raise exception 'Onboarding client not found';
+  end if;
+
+  if v_email = '' or position('@' in v_email) < 2 then
+    raise exception 'Invite email is required';
+  end if;
+
+  if p_expires_in_hours is not null and p_expires_in_hours < 1 then
+    raise exception 'Invite expiry hours must be >= 1';
+  end if;
+
+  if p_expires_in_hours is not null then
+    v_expires_at := now() + make_interval(hours => least(p_expires_in_hours, 24 * 90));
+  end if;
+
+  v_base_url := nullif(trim(coalesce(p_invite_base_url, '')), '');
+  if v_base_url is null then
+    raise exception 'Invite base URL is required';
+  end if;
+
+  v_token := encode(extensions.gen_random_bytes(24), 'hex');
+  v_token_hash := encode(extensions.digest(v_token, 'sha256'), 'hex');
+  v_invite_url := case
+    when position('?' in v_base_url) > 0 then v_base_url || '&invite=' || v_token
+    else v_base_url || '?invite=' || v_token
+  end;
+
+  select coalesce(cd.company_name, pc."Name")
+  into v_company_name
+  from onboarding.onboarding_client c
+  left join onboarding.company_directory cd on cd.id = c.company_directory_id
+  left join public."Company" pc on pc."ID" = c.company_id
+  where c.id = v_client.id;
+
+  insert into onboarding.client_signup_invite (
+    invite_token_hash,
+    invited_email,
+    invited_full_name,
+    onboarding_client_id,
+    invited_by_auth_user_id,
+    expires_at,
+    metadata_json
+  )
+  values (
+    v_token_hash,
+    v_email,
+    v_full_name,
+    v_client.id,
+    v_auth_user_id,
+    v_expires_at,
+    jsonb_build_object('created_from', 'create_client_signup_invite')
+  )
+  returning id into v_invite_id;
+
+  return jsonb_build_object(
+    'status', 'ok',
+    'invite_id', v_invite_id,
+    'invite_url', v_invite_url,
+    'invited_email', v_email,
+    'portal_role', 'client',
+    'onboarding_client_id', v_client.id,
+    'company_name', v_company_name,
+    'community_name', v_client.display_name,
+    'expires_at', v_expires_at
+  );
+end;
+$$;
+
+create or replace function public.redeem_client_signup_invite(
+  p_invite_token text,
+  p_full_name text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_auth_user_id uuid := auth.uid();
+  v_token text := trim(coalesce(p_invite_token, ''));
+  v_token_hash text;
+  v_invite onboarding.client_signup_invite%rowtype;
+  v_session_email text := lower(trim(coalesce(auth.jwt() ->> 'email', '')));
+  v_full_name text := nullif(trim(coalesce(p_full_name, '')), '');
+  v_company_id bigint;
+  v_company_directory_id bigint;
+  v_company_name text;
+  v_community_name text;
+begin
+  if v_auth_user_id is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+
+  if v_token = '' then
+    raise exception 'Invite token is required';
+  end if;
+
+  v_token_hash := encode(extensions.digest(v_token, 'sha256'), 'hex');
+
+  select *
+  into v_invite
+  from onboarding.client_signup_invite i
+  where i.invite_token_hash = v_token_hash
+  for update;
+
+  if not found then
+    raise exception 'Invite is invalid';
+  end if;
+
+  if v_invite.redeemed_at is not null and v_invite.redeemed_by_auth_user_id = v_auth_user_id then
+    return jsonb_build_object(
+      'status', 'ok',
+      'portal_role', 'client',
+      'email', coalesce(v_invite.invited_email, v_session_email),
+      'onboarding_client_id', v_invite.onboarding_client_id
+    );
+  end if;
+
+  if v_invite.redeemed_at is not null then
+    raise exception 'Invite is already used';
+  end if;
+
+  if v_invite.expires_at is not null and v_invite.expires_at < now() then
+    raise exception 'Invite is expired';
+  end if;
+
+  if v_session_email = '' then
+    raise exception 'Authenticated email is required';
+  end if;
+
+  if lower(trim(v_invite.invited_email)) <> v_session_email then
+    raise exception 'This invite is not for the authenticated email address';
+  end if;
+
+  select
+    c.company_id,
+    c.company_directory_id,
+    coalesce(cd.company_name, pc."Name"),
+    c.display_name
+  into v_company_id, v_company_directory_id, v_company_name, v_community_name
+  from onboarding.onboarding_client c
+  left join onboarding.company_directory cd on cd.id = c.company_directory_id
+  left join public."Company" pc on pc."ID" = c.company_id
+  where c.id = v_invite.onboarding_client_id;
+
+  if v_company_directory_id is null then
+    raise exception 'Invited community is not linked to a company directory';
+  end if;
+
+  if v_full_name is null then
+    v_full_name := nullif(trim(coalesce(v_invite.invited_full_name, '')), '');
+  end if;
+
+  if v_full_name is null then
+    v_full_name := nullif(trim(coalesce(auth.jwt() -> 'user_metadata' ->> 'full_name', '')), '');
+  end if;
+
+  if v_full_name is null then
+    v_full_name := split_part(v_session_email, '@', 1);
+  end if;
+
+  insert into onboarding.portal_user_profile (
+    auth_user_id,
+    email,
+    full_name,
+    company_directory_id
+  )
+  values (
+    v_auth_user_id,
+    v_session_email,
+    v_full_name,
+    v_company_directory_id
+  )
+  on conflict (auth_user_id)
+  do update set
+    email = excluded.email,
+    full_name = excluded.full_name,
+    company_directory_id = excluded.company_directory_id,
+    updated_at = now();
+
+  insert into onboarding.portal_user_company_access (
+    auth_user_id,
+    company_id,
+    onboarding_client_id,
+    portal_role,
+    is_active
+  )
+  values (
+    v_auth_user_id,
+    v_company_id,
+    v_invite.onboarding_client_id,
+    'client',
+    true
+  )
+  on conflict (auth_user_id, onboarding_client_id, portal_role)
+  do update set
+    company_id = excluded.company_id,
+    is_active = true,
+    updated_at = now();
+
+  update onboarding.portal_user_company_access m
+  set is_active = (m.onboarding_client_id = v_invite.onboarding_client_id),
+      updated_at = case
+        when m.onboarding_client_id = v_invite.onboarding_client_id then now()
+        else m.updated_at
+      end
+  where m.auth_user_id = v_auth_user_id
+    and m.portal_role = 'client';
+
+  update onboarding.client_signup_invite i
+  set redeemed_at = now(),
+      redeemed_by_auth_user_id = v_auth_user_id,
+      updated_at = now()
+  where i.id = v_invite.id;
+
+  return jsonb_build_object(
+    'status', 'ok',
+    'portal_role', 'client',
+    'email', v_session_email,
+    'auth_user_id', v_auth_user_id,
+    'onboarding_client_id', v_invite.onboarding_client_id,
+    'company_directory_id', v_company_directory_id,
+    'company_name', v_company_name,
+    'community_name', v_community_name
   );
 end;
 $$;
@@ -5078,6 +5458,9 @@ grant execute on function public.internal_assert_portal_company_consistency() to
 grant execute on function public.create_internal_signup_invite(text, text, text, integer, text) to authenticated, service_role;
 grant execute on function public.get_internal_signup_invite(text) to anon, authenticated, service_role;
 grant execute on function public.redeem_internal_signup_invite(text, text) to authenticated, service_role;
+grant execute on function public.create_client_signup_invite(bigint, text, text, integer, text) to authenticated, service_role;
+grant execute on function public.get_client_signup_invite(text) to anon, authenticated, service_role;
+grant execute on function public.redeem_client_signup_invite(text, text) to authenticated, service_role;
 
 -- -----------------------------------------------------------------------------
 -- Dropbox Business Integration

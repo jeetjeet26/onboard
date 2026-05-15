@@ -181,6 +181,7 @@ export default defineConfig(({ mode }) => {
           accountAccess: path.resolve(rootDir, "p11-onboarding-account-access.html"),
           onboardingThankYou: path.resolve(rootDir, "p11-onboarding-thank-you.html"),
           clientHome: path.resolve(rootDir, "client-home.html"),
+          clientSignup: path.resolve(rootDir, "client-signup.html"),
           internal: path.resolve(rootDir, "internal.html"),
           internalClientEditor: path.resolve(rootDir, "internal-client-editor.html"),
           internalCompany: path.resolve(rootDir, "internal-company.html"),

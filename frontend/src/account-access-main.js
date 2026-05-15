@@ -21,7 +21,7 @@ import {
   stageIndex,
   toStageLabel,
 } from "./stages.js";
-import { applyRoleChrome, consumeRedirectNotice, renderNotice } from "./navigation.js";
+import { applyRoleChrome, consumeRedirectNotice, isInternalContext, renderNotice } from "./navigation.js";
 import { escapeHtml, sanitizeUrl } from "./utils/sanitize.js";
 
 const PLATFORM_GUIDES = {
@@ -151,9 +151,12 @@ function applyRoleNavigation() {
 
 function openDashboardTeamView() {
   try {
-    sessionStorage.setItem(DASHBOARD_VIEW_PREF_KEY, "internal");
+    sessionStorage.setItem(
+      DASHBOARD_VIEW_PREF_KEY,
+      isInternalContext(state.portalContext) ? "internal" : "client"
+    );
   } catch (_error) {
-    // The dashboard will still load; it just cannot preselect Team View.
+    // The dashboard will still load; it just cannot preselect a view.
   }
   window.location.href = "/p11-onboarding-dashboard.html";
 }

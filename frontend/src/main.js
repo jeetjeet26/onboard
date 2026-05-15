@@ -30,7 +30,7 @@ import {
   stageIndex,
   toStageLabel,
 } from "./stages.js";
-import { applyRoleChrome, consumeRedirectNotice, renderNotice } from "./navigation.js";
+import { applyRoleChrome, consumeRedirectNotice, isInternalContext, renderNotice } from "./navigation.js";
 import { escapeHtml, sanitizeUrl } from "./utils/sanitize.js";
 
 const SERVICE_ID_TO_CODE = {
@@ -961,8 +961,16 @@ async function hydrateLatestSubmissionForActiveCommunity() {
   applyStage(stage);
 }
 
+function readSavedViewPreference() {
+  try {
+    return sessionStorage.getItem(VIEW_PREF_KEY);
+  } catch {
+    return null;
+  }
+}
+
 function updateTeamToggleAccess(context) {
-  const isInternalRole = ["internal", "admin"].includes(context?.portal_role || "");
+  const isInternalRole = isInternalContext(context);
   applyRoleChrome(context, { homeLinkId: "dashboardHomeLink" });
 
   const teamToggleBtn = document.getElementById("teamToggleBtn");
@@ -970,9 +978,8 @@ function updateTeamToggleAccess(context) {
     teamToggleBtn.style.display = isInternalRole ? "inline-flex" : "none";
   }
 
-  if (!isInternalRole) {
-    setView("client");
-  }
+  const savedView = readSavedViewPreference();
+  setView(isInternalRole && savedView === "internal" ? "internal" : "client");
 }
 
 function renderTeamAssignments(assignments = []) {
@@ -2470,11 +2477,14 @@ async function bootstrapAuth() {
   });
 }
 
-function setView(view) {
+function setView(view, { persist = true } = {}) {
   const clientToggleBtn = document.getElementById("clientToggleBtn");
   const teamToggleBtn = document.getElementById("teamToggleBtn");
-  const normalizedView =
+  let normalizedView =
     view === "team" || view === "internal" ? "internal" : "client";
+  if (normalizedView === "internal" && !isInternalContext(state.portalContext)) {
+    normalizedView = "client";
+  }
   if (clientToggleBtn) {
     clientToggleBtn.classList.toggle("active", normalizedView === "client");
   }
@@ -2482,10 +2492,12 @@ function setView(view) {
     teamToggleBtn.classList.toggle("active", normalizedView === "internal");
   }
   document.body.classList.toggle("int", normalizedView === "internal");
-  try {
-    sessionStorage.setItem(VIEW_PREF_KEY, normalizedView);
-  } catch {
-    // ignore session storage failures
+  if (persist) {
+    try {
+      sessionStorage.setItem(VIEW_PREF_KEY, normalizedView);
+    } catch {
+      // ignore session storage failures
+    }
   }
 }
 
@@ -2502,14 +2514,7 @@ function initializeViewToggle() {
     teamToggleBtn.addEventListener("click", () => setView("internal"));
   }
 
-  try {
-    const saved = sessionStorage.getItem(VIEW_PREF_KEY);
-    if (saved === "internal" || saved === "client") {
-      setView(saved);
-    }
-  } catch {
-    // ignore session storage failures
-  }
+  setView("client", { persist: false });
 }
 
 function toggleAcc(element) {

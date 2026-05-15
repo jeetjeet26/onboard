@@ -1,4 +1,5 @@
 import {
+  createClientSignupInvite,
   createDropboxFolderForClient,
   disconnectDropbox,
   getCurrentSession,
@@ -24,6 +25,7 @@ const state = {
   currentStage: null,
   dropboxStatus: null,
   dropboxBinding: null,
+  creatingClientInvite: false,
 };
 
 function escapeHtml(value) {
@@ -50,6 +52,13 @@ function setValue(id, value) {
 
 function setStatus(message = "", kind = "") {
   const target = byId("editorStatus");
+  if (!target) return;
+  target.className = `status${kind ? ` ${kind}` : ""}`;
+  target.textContent = message;
+}
+
+function setClientInviteStatus(message = "", kind = "") {
+  const target = byId("clientInviteStatus");
   if (!target) return;
   target.className = `status${kind ? ` ${kind}` : ""}`;
   target.textContent = message;
@@ -112,11 +121,19 @@ function setOpenOnboardingEnabled(enabled) {
   button.disabled = !enabled;
 }
 
+function setClientInviteEnabled(enabled) {
+  const submit = byId("clientInviteSubmit");
+  const copy = byId("copyClientInviteBtn");
+  if (submit) submit.disabled = !enabled;
+  if (copy) copy.disabled = !byId("clientInviteLink")?.value;
+}
+
 function applyDetailToForm(detail) {
   updateHeaderMeta(detail);
   state.clientId = Number(detail.onboarding_client_id);
   state.currentStage = detail.current_stage || null;
   setOpenOnboardingEnabled(Boolean(state.clientId));
+  setClientInviteEnabled(Boolean(state.clientId));
 
   if (detail.company_directory_id || detail.company_name) {
     setSelectedCompany({
@@ -140,6 +157,8 @@ function applyDetailToForm(detail) {
   setValue("preferredCommunicationMethod", detail.preferred_communication_method);
   setValue("reportingPrimaryName", detail.reporting_primary_name);
   setValue("reportingPrimaryEmail", detail.reporting_primary_email);
+  setValue("clientInviteFullName", detail.reporting_primary_name);
+  setValue("clientInviteEmail", detail.reporting_primary_email || detail.community_email);
   setValue("additionalReportRecipients", detail.additional_report_recipients);
   setValue("conversionActions", detail.conversion_actions);
   setValue("technicalNotes", detail.technical_notes);
@@ -269,6 +288,7 @@ async function handleSave(event) {
 
     state.clientId = savedId;
     setOpenOnboardingEnabled(true);
+    setClientInviteEnabled(true);
     updateHeaderMeta({ onboarding_client_id: savedId });
     if (!state.selectedCompany && response?.company_directory_id && response?.company_name) {
       setSelectedCompany({
@@ -316,6 +336,67 @@ async function handleOpenOnboarding() {
     window.location.href = destination;
   } catch (error) {
     setStatus(`Unable to open onboarding flow: ${error.message}`, "error");
+  }
+}
+
+function getClientInviteBaseUrl() {
+  return `${window.location.origin}/client-signup.html`;
+}
+
+async function handleCreateClientInvite(event) {
+  event.preventDefault();
+  if (state.creatingClientInvite) return;
+
+  if (!state.clientId) {
+    setClientInviteStatus("Save the client first, then generate an invite.", "error");
+    return;
+  }
+
+  const submitBtn = byId("clientInviteSubmit");
+  const linkOutput = byId("clientInviteLink");
+  const email = valueOf("clientInviteEmail").trim();
+  const fullName = valueOf("clientInviteFullName").trim() || null;
+  const expiresHoursRaw = valueOf("clientInviteExpiresHours").trim();
+  const expiresInHours = expiresHoursRaw ? Number(expiresHoursRaw) : null;
+
+  if (!email || !email.includes("@")) {
+    setClientInviteStatus("Enter a valid client email address.", "error");
+    return;
+  }
+
+  if (expiresInHours !== null && (!Number.isFinite(expiresInHours) || expiresInHours < 1)) {
+    setClientInviteStatus("Invite expiry must be a positive number of hours.", "error");
+    return;
+  }
+
+  try {
+    state.creatingClientInvite = true;
+    setClientInviteStatus("Generating client invite link...");
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Generating...";
+    }
+    const result = await createClientSignupInvite({
+      onboardingClientId: state.clientId,
+      email,
+      fullName,
+      expiresInHours,
+      inviteBaseUrl: getClientInviteBaseUrl(),
+    });
+    if (!result?.invite_url) {
+      throw new Error("Invite was created, but no invite URL was returned.");
+    }
+    if (linkOutput) linkOutput.value = result.invite_url;
+    setClientInviteEnabled(true);
+    setClientInviteStatus("Client invite link generated. Send it directly to the client.", "success");
+  } catch (error) {
+    setClientInviteStatus(`Unable to generate client invite: ${error.message}`, "error");
+  } finally {
+    state.creatingClientInvite = false;
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Generate Client Invite";
+    }
   }
 }
 
@@ -674,8 +755,20 @@ function handleDropboxCallbackParams() {
 
 function bindHandlers() {
   byId("clientEditorForm")?.addEventListener("submit", handleSave);
+  byId("clientInviteForm")?.addEventListener("submit", handleCreateClientInvite);
   byId("companySearchBtn")?.addEventListener("click", handleCompanySearch);
   byId("openOnboardingBtn")?.addEventListener("click", handleOpenOnboarding);
+
+  byId("copyClientInviteBtn")?.addEventListener("click", async () => {
+    const linkOutput = byId("clientInviteLink");
+    if (!linkOutput?.value) return;
+    try {
+      await navigator.clipboard.writeText(linkOutput.value);
+      setClientInviteStatus("Client invite link copied.", "success");
+    } catch (_error) {
+      setClientInviteStatus("Unable to copy automatically. Copy the link manually.", "error");
+    }
+  });
 
   byId("clearCompanyBtn")?.addEventListener("click", () => {
     setSelectedCompany(null);
@@ -712,6 +805,7 @@ async function initialize() {
   bindHandlers();
   bindDropboxHandlers();
   setOpenOnboardingEnabled(false);
+  setClientInviteEnabled(false);
 
   const session = await getCurrentSession();
   if (!session) {

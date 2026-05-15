@@ -439,6 +439,53 @@ export async function createInternalSignupInvite({
   return data;
 }
 
+export async function createClientSignupInvite({
+  onboardingClientId,
+  email,
+  fullName = null,
+  expiresInHours = null,
+  inviteBaseUrl = null,
+}) {
+  const { data, error } = await supabase.rpc("create_client_signup_invite", {
+    p_onboarding_client_id: onboardingClientId,
+    p_email: email,
+    p_full_name: fullName,
+    p_expires_in_hours: expiresInHours,
+    p_invite_base_url: inviteBaseUrl,
+  });
+
+  if (error) {
+    throw new Error(`Client invite creation failed: ${error.message}`);
+  }
+
+  return data;
+}
+
+export async function getClientSignupInvite(inviteToken) {
+  const { data, error } = await supabase.rpc("get_client_signup_invite", {
+    p_invite_token: inviteToken,
+  });
+
+  if (error) {
+    throw new Error(`Client invite lookup failed: ${error.message}`);
+  }
+
+  return data;
+}
+
+export async function redeemClientSignupInvite({ inviteToken, fullName = null }) {
+  const { data, error } = await supabase.rpc("redeem_client_signup_invite", {
+    p_invite_token: inviteToken,
+    p_full_name: fullName,
+  });
+
+  if (error) {
+    throw new Error(`Client invite redemption failed: ${error.message}`);
+  }
+
+  return data;
+}
+
 export async function getInternalSignupInvite(inviteToken) {
   const { data, error } = await supabase.rpc("get_internal_signup_invite", {
     p_invite_token: inviteToken,

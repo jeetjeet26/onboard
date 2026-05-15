@@ -6,10 +6,11 @@ Multi-page onboarding portal for P11creative clients and internal teams.
 
 - `index.html` - workspace home
 - `client-home.html` - client community switcher + entrypoint
+- `client-signup.html` - invite-only client account signup
 - `p11-onboarding-dashboard.html` - intake workflow (Step 2)
 - `p11-onboarding-account-access.html` - platform access workflow (Step 3)
 - `internal.html` - internal operations portal
-- `internal-client-editor.html` - internal client editor and Dropbox binding tools
+- `internal-client-editor.html` - internal client editor, client invites, and Dropbox binding tools
 - `internal-company.html` - company directory manager
 - `internal-signup.html` - invite-only internal signup
 - `p11-onboarding-automation-flow.html` - onboarding automation reference

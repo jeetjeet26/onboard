@@ -533,6 +533,33 @@
         </p>
         <div class="sync-status" id="syncQueueStatus"></div>
 
+        <div class="stats">
+          <div class="stat"><div class="label">Communities</div><div class="value" id="totalCommunities">0</div></div>
+          <div class="stat"><div class="label">In Intake</div><div class="value" id="intakeCount">0</div></div>
+          <div class="stat"><div class="label">Awaiting Access</div><div class="value" id="accessCount">0</div></div>
+          <div class="stat"><div class="label">Go Live</div><div class="value" id="goLiveCount">0</div></div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Company</th>
+                <th>Community</th>
+                <th>Stage</th>
+                <th>Status</th>
+                <th>Go Live</th>
+                <th>Required Access Outstanding</th>
+                <th>Queued Sync Jobs</th>
+                <th>Last Submission</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="overviewBody"></tbody>
+          </table>
+        </div>
+        <div class="pagination-bar" id="overviewPagination"></div>
+
         <div class="sub-toolbar">
           <strong style="font-size:12px; letter-spacing:0.04em; text-transform:uppercase;">Company Directory</strong>
           <input
@@ -596,33 +623,6 @@
           </div>
           <div class="auth-message" id="inviteMessage"></div>
         </section>
-
-        <div class="stats">
-          <div class="stat"><div class="label">Communities</div><div class="value" id="totalCommunities">0</div></div>
-          <div class="stat"><div class="label">In Intake</div><div class="value" id="intakeCount">0</div></div>
-          <div class="stat"><div class="label">Awaiting Access</div><div class="value" id="accessCount">0</div></div>
-          <div class="stat"><div class="label">Go Live</div><div class="value" id="goLiveCount">0</div></div>
-        </div>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Company</th>
-                <th>Community</th>
-                <th>Stage</th>
-                <th>Status</th>
-                <th>Go Live</th>
-                <th>Required Access Outstanding</th>
-                <th>Queued Sync Jobs</th>
-                <th>Last Submission</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="overviewBody"></tbody>
-          </table>
-        </div>
-        <div class="pagination-bar" id="overviewPagination"></div>
       </section>
     </main>
 

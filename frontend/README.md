@@ -4,9 +4,10 @@ This folder contains the operational frontend wiring for the multi-page onboardi
 
 - `../p11-onboarding-dashboard.html` (main UI)
 - `../client-home.html` (client community switcher and entry point)
+- `../client-signup.html` (invite-only client signup)
 - `../p11-onboarding-account-access.html` (Step 3 platform access workflow)
 - `../internal.html` (internal operations overview)
-- `../internal-client-editor.html` (internal client and Dropbox editor)
+- `../internal-client-editor.html` (internal client, invite, and Dropbox editor)
 - `../internal-company.html` (company directory manager)
 - `../internal-signup.html` (invite-only internal signup)
 - `src/config.js` (Supabase config)
@@ -44,6 +45,7 @@ npm run build
 - The portal is now login-required.
 - Users must sign up or log in with Supabase Auth before the dashboard becomes available.
 - Signup includes company search against the data lake and fuzzy matching for near matches.
+- Internal users can generate client invite links from the client editor; redemption creates a `client` membership for the invited community.
 - Company membership is completed via authenticated RPCs and linked through `portal_user_company_access`.
 - Intake submission uses authenticated RPCs, not the old public token flow.
 - Step labels and tracker logic should come from `src/stages.js`; do not duplicate stage arrays in page modules.

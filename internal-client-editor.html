@@ -281,6 +281,33 @@
         margin-top: 18px;
       }
 
+      .client-invite-card {
+        margin-top: 18px;
+      }
+
+      .client-invite-card h2 {
+        margin: 0 0 6px;
+        font-size: 17px;
+      }
+
+      .invite-link-row {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .invite-link {
+        flex: 1;
+        min-width: 280px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 11px;
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      }
+
       .dropbox-card h2 {
         margin: 0 0 6px;
         font-size: 17px;
@@ -558,6 +585,38 @@
           </div>
           <div class="status" id="editorStatus"></div>
         </form>
+      </section>
+
+      <section class="card client-invite-card" id="clientInviteCard">
+        <h2>Client Portal Invite</h2>
+        <p class="intro">
+          Generate a one-time signup link for a client user. The invite is tied to this community and grants
+          client portal access for the selected company.
+        </p>
+        <form id="clientInviteForm" novalidate>
+          <div class="form-grid">
+            <div class="field">
+              <label for="clientInviteEmail">Client Email *</label>
+              <input id="clientInviteEmail" type="email" required />
+            </div>
+            <div class="field">
+              <label for="clientInviteFullName">Full Name</label>
+              <input id="clientInviteFullName" type="text" />
+            </div>
+            <div class="field">
+              <label for="clientInviteExpiresHours">Invite Expiry (hours)</label>
+              <input id="clientInviteExpiresHours" type="number" min="1" placeholder="e.g. 168" />
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="clientInviteSubmit" type="submit">Generate Client Invite</button>
+          </div>
+        </form>
+        <div class="invite-link-row">
+          <input class="invite-link" id="clientInviteLink" type="text" readonly placeholder="Client invite link will appear here" />
+          <button class="btn" id="copyClientInviteBtn" type="button">Copy Link</button>
+        </div>
+        <div class="status" id="clientInviteStatus"></div>
       </section>
 
       <section class="card dropbox-card" id="dropboxCard">
