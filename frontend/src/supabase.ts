@@ -1,10 +1,6 @@
+import { createClient } from "@supabase/supabase-js";
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from "./config.js";
-
-if (!window.supabase || !window.supabase.createClient) {
-  throw new Error(
-    "Supabase client library is not loaded. Ensure the CDN script is included."
-  );
-}
+import type { Database } from "./database.types.js";
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   throw new Error(
@@ -12,28 +8,25 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   );
 }
 
-export const supabase = window.supabase.createClient(
-  SUPABASE_URL,
-  SUPABASE_ANON_KEY,
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-    },
-  }
-);
+export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+});
 
 const ACCESS_COOKIE_KEY = "p11_access_token";
 
-function writeAccessCookie(accessToken) {
+function writeAccessCookie(accessToken: string) {
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
   if (!accessToken) {
-    document.cookie = `${ACCESS_COOKIE_KEY}=; Path=/; Max-Age=0; SameSite=Lax`;
+    document.cookie = `${ACCESS_COOKIE_KEY}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
     return;
   }
   document.cookie =
     `${ACCESS_COOKIE_KEY}=${encodeURIComponent(accessToken)}; ` +
-    "Path=/; Max-Age=604800; SameSite=Lax";
+    `Path=/; Max-Age=3600; SameSite=Lax${secure}`;
 }
 
 async function syncAccessCookieFromSession() {

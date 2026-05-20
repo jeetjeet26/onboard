@@ -24,6 +24,15 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Check SQL invariants
+        run: npm run check:sql-invariants
+
       - name: Check DB company consistency
         run: npm run check:db-company-consistency
         env:

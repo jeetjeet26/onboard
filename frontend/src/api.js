@@ -1,4 +1,4 @@
-import { supabase } from "./supabase.js";
+import { supabase } from "./supabase.ts";
 import { BRAND_ASSET_BUCKET, SUPABASE_URL } from "./config.js";
 
 export async function signUpUser({ email, password, fullName }) {
@@ -199,27 +199,8 @@ export async function getLatestSubmissionPayload(onboardingClientId) {
     return rpcResult.data ?? null;
   }
 
-  const { data, error } = await supabase
-    .schema("onboarding")
-    .from("onboarding_submission")
-    .select("raw_payload_json, submitted_at, id")
-    .eq("onboarding_client_id", onboardingClientId)
-    .in("submission_status", ["submitted", "resubmitted"])
-    .order("submitted_at", { ascending: false, nullsFirst: false })
-    .order("id", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (error) {
-    console.warn(
-      "Latest submission payload unavailable:",
-      rpcResult.error.message,
-      error.message
-    );
-    return null;
-  }
-
-  return data?.raw_payload_json ?? null;
+  console.warn("Latest submission payload RPC unavailable:", rpcResult.error.message);
+  return null;
 }
 
 export async function upsertTaskState({

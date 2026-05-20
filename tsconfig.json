@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "isolatedModules": true,
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2023",
+    "types": ["vitest/globals"]
+  },
+  "include": [
+    "frontend/src/**/*.js",
+    "frontend/src/**/*.ts",
+    "route-guard.mjs",
+    "server.mjs",
+    "vite.config.js"
+  ]
+}

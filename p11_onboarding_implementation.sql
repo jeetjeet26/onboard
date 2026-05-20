@@ -122,6 +122,7 @@ $$;
 create or replace function onboarding.is_internal_user()
 returns boolean
 language plpgsql
+security definer
 stable
 set search_path = onboarding, public
 as $$
@@ -157,6 +158,7 @@ $$;
 create or replace function onboarding.is_admin_user()
 returns boolean
 language plpgsql
+security definer
 stable
 set search_path = onboarding, public
 as $$
@@ -636,6 +638,15 @@ create index if not exists idx_onboarding_assignment_client_id on onboarding.onb
 create index if not exists idx_onboarding_link_client_id on onboarding.onboarding_link(onboarding_client_id);
 create index if not exists idx_onboarding_brand_asset_client_id on onboarding.onboarding_brand_asset(onboarding_client_id);
 create index if not exists idx_portal_user_company_access_user on onboarding.portal_user_company_access(auth_user_id);
+create index if not exists idx_portal_user_company_access_active_user
+on onboarding.portal_user_company_access(auth_user_id, is_active, updated_at desc, id desc);
+create index if not exists idx_portal_user_company_access_client_user_active
+on onboarding.portal_user_company_access(onboarding_client_id, auth_user_id, is_active);
+create index if not exists idx_onboarding_client_company_directory_updated
+on onboarding.onboarding_client(company_directory_id, updated_at desc)
+where company_directory_id is not null;
+create index if not exists idx_onboarding_stage_event_client_id
+on onboarding.onboarding_stage_event(onboarding_client_id);
 create index if not exists idx_onboarding_sync_job_status on onboarding.onboarding_sync_job(status);
 
 -- -----------------------------------------------------------------------------
@@ -1732,6 +1743,80 @@ alter table onboarding.onboarding_approval enable row level security;
 alter table onboarding.onboarding_stage_event enable row level security;
 alter table onboarding.portal_user_company_access enable row level security;
 alter table onboarding.onboarding_sync_job enable row level security;
+alter table onboarding.property_type_crosswalk enable row level security;
+alter table onboarding.service_code_lookup enable row level security;
+alter table onboarding.stage_crosswalk enable row level security;
+alter table onboarding.platform_code_lookup enable row level security;
+alter table onboarding.field_mapping_spec enable row level security;
+
+drop policy if exists property_type_crosswalk_select_policy on onboarding.property_type_crosswalk;
+create policy property_type_crosswalk_select_policy
+on onboarding.property_type_crosswalk
+for select
+to authenticated
+using (true);
+
+drop policy if exists property_type_crosswalk_modify_internal_policy on onboarding.property_type_crosswalk;
+create policy property_type_crosswalk_modify_internal_policy
+on onboarding.property_type_crosswalk
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+drop policy if exists service_code_lookup_select_policy on onboarding.service_code_lookup;
+create policy service_code_lookup_select_policy
+on onboarding.service_code_lookup
+for select
+to authenticated
+using (true);
+
+drop policy if exists service_code_lookup_modify_internal_policy on onboarding.service_code_lookup;
+create policy service_code_lookup_modify_internal_policy
+on onboarding.service_code_lookup
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+drop policy if exists stage_crosswalk_select_policy on onboarding.stage_crosswalk;
+create policy stage_crosswalk_select_policy
+on onboarding.stage_crosswalk
+for select
+to authenticated
+using (true);
+
+drop policy if exists stage_crosswalk_modify_internal_policy on onboarding.stage_crosswalk;
+create policy stage_crosswalk_modify_internal_policy
+on onboarding.stage_crosswalk
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+drop policy if exists platform_code_lookup_select_policy on onboarding.platform_code_lookup;
+create policy platform_code_lookup_select_policy
+on onboarding.platform_code_lookup
+for select
+to authenticated
+using (true);
+
+drop policy if exists platform_code_lookup_modify_internal_policy on onboarding.platform_code_lookup;
+create policy platform_code_lookup_modify_internal_policy
+on onboarding.platform_code_lookup
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+drop policy if exists field_mapping_spec_select_internal_policy on onboarding.field_mapping_spec;
+create policy field_mapping_spec_select_internal_policy
+on onboarding.field_mapping_spec
+for select
+using (onboarding.is_internal_user());
+
+drop policy if exists field_mapping_spec_modify_internal_policy on onboarding.field_mapping_spec;
+create policy field_mapping_spec_modify_internal_policy
+on onboarding.field_mapping_spec
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
 
 drop policy if exists onboarding_client_select_policy on onboarding.onboarding_client;
 create policy onboarding_client_select_policy
@@ -2192,6 +2277,21 @@ grant usage on schema onboarding to anon, authenticated, service_role;
 grant select, insert, update, delete on all tables in schema onboarding to authenticated, service_role;
 grant usage, select on all sequences in schema onboarding to authenticated, service_role;
 
+revoke insert, update, delete on
+  onboarding.property_type_crosswalk,
+  onboarding.service_code_lookup,
+  onboarding.stage_crosswalk,
+  onboarding.platform_code_lookup,
+  onboarding.field_mapping_spec
+from anon, authenticated;
+
+grant select on
+  onboarding.property_type_crosswalk,
+  onboarding.service_code_lookup,
+  onboarding.stage_crosswalk,
+  onboarding.platform_code_lookup
+to authenticated, service_role;
+
 grant execute on function onboarding.is_internal_user() to authenticated, service_role;
 grant execute on function onboarding.has_client_access(bigint) to authenticated, service_role;
 grant execute on function onboarding.can_access_brand_asset_path(text) to authenticated, service_role;
@@ -2213,6 +2313,14 @@ grant select on onboarding.onboarding_platform_access_v to authenticated, servic
 grant select on onboarding.onboarding_readiness_v to authenticated, service_role;
 grant select on onboarding.portal_client_dashboard_v to authenticated, service_role;
 grant select on onboarding.portal_internal_dashboard_v to authenticated, service_role;
+revoke insert, update, delete on
+  onboarding.onboarding_company_360_v,
+  onboarding.onboarding_services_v,
+  onboarding.onboarding_platform_access_v,
+  onboarding.onboarding_readiness_v,
+  onboarding.portal_client_dashboard_v,
+  onboarding.portal_internal_dashboard_v
+from anon, authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Public Portal RPCs
@@ -2575,8 +2683,15 @@ create unique index if not exists idx_company_directory_public_company_id
   on onboarding.company_directory(public_company_id)
   where public_company_id is not null;
 
+create unique index if not exists idx_company_directory_custom_normalized_name
+  on onboarding.company_directory(normalized_name)
+  where public_company_id is null;
+
 create index if not exists idx_company_directory_normalized_name
   on onboarding.company_directory(normalized_name);
+
+create index if not exists idx_company_directory_updated_at
+  on onboarding.company_directory(updated_at desc);
 
 create index if not exists idx_company_directory_name_trgm
   on onboarding.company_directory using gin (company_name gin_trgm_ops);
@@ -2673,6 +2788,41 @@ before update on onboarding.client_signup_invite
 for each row execute function onboarding.tg_set_updated_at();
 
 alter table onboarding.client_signup_invite enable row level security;
+alter table onboarding.internal_user_access enable row level security;
+alter table onboarding.internal_signup_invite enable row level security;
+
+revoke all on onboarding.internal_user_access from anon, authenticated;
+revoke all on onboarding.internal_signup_invite from anon, authenticated;
+grant select, insert, update, delete on
+  onboarding.internal_user_access,
+  onboarding.internal_signup_invite
+to service_role;
+
+drop policy if exists internal_user_access_select_internal_policy on onboarding.internal_user_access;
+create policy internal_user_access_select_internal_policy
+on onboarding.internal_user_access
+for select
+using (onboarding.is_internal_user());
+
+drop policy if exists internal_user_access_modify_admin_policy on onboarding.internal_user_access;
+create policy internal_user_access_modify_admin_policy
+on onboarding.internal_user_access
+for all
+using (onboarding.is_admin_user())
+with check (onboarding.is_admin_user());
+
+drop policy if exists internal_signup_invite_select_internal_policy on onboarding.internal_signup_invite;
+create policy internal_signup_invite_select_internal_policy
+on onboarding.internal_signup_invite
+for select
+using (onboarding.is_internal_user());
+
+drop policy if exists internal_signup_invite_modify_internal_policy on onboarding.internal_signup_invite;
+create policy internal_signup_invite_modify_internal_policy
+on onboarding.internal_signup_invite
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
 
 drop policy if exists client_signup_invite_select_internal_policy on onboarding.client_signup_invite;
 create policy client_signup_invite_select_internal_policy
@@ -2709,7 +2859,9 @@ where c."Name" is not null
   and length(trim(c."Name")) > 0
 on conflict do nothing;
 
-create or replace view onboarding.v_portal_user_membership as
+create or replace view onboarding.v_portal_user_membership
+with (security_invoker = true)
+as
 select
   m.id as access_id,
   m.auth_user_id,
@@ -3465,6 +3617,7 @@ begin
       from onboarding.portal_user_company_access m
       where m.auth_user_id = v_auth_user_id
         and m.onboarding_client_id = v_onboarding_client_id
+        and m.is_active = true
     ) then
       raise exception 'You do not have access to this community' using errcode = '42501';
     end if;
@@ -5427,10 +5580,6 @@ revoke execute on function onboarding.public_submit_intake(jsonb) from anon;
 revoke execute on function onboarding.public_get_onboarding_snapshot(bigint, uuid) from anon;
 revoke execute on function onboarding.public_upsert_task_state(bigint, uuid, text, boolean, text, text) from anon;
 revoke execute on function onboarding.public_list_task_states(bigint, uuid) from anon;
-revoke execute on function public.public_submit_intake(jsonb) from anon;
-revoke execute on function public.public_get_onboarding_snapshot(bigint, uuid) from anon;
-revoke execute on function public.public_upsert_task_state(bigint, uuid, text, boolean, text, text) from anon;
-revoke execute on function public.public_list_task_states(bigint, uuid) from anon;
 revoke execute on function public.internal_assert_portal_company_consistency() from public, anon, authenticated;
 
 grant execute on function public.search_companies(text, integer) to anon, authenticated, service_role;
@@ -5762,3 +5911,9 @@ grant execute on function public.internal_get_dropbox_folder_binding(bigint) to 
 grant execute on function public.internal_clear_dropbox_folder_binding(bigint) to authenticated, service_role;
 grant execute on function public.get_my_dropbox_folder() to authenticated, service_role;
 grant execute on function public.can_access_onboarding_client(bigint) to authenticated, service_role;
+
+do $$
+begin
+  perform public.internal_assert_portal_company_consistency();
+end;
+$$;

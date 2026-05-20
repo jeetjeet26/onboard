@@ -1,4 +1,4 @@
-const runtimeConfig = window.__P11_CONFIG__ || {};
+const runtimeConfig = globalThis.window?.__P11_CONFIG__ || {};
 const envConfig = (typeof import.meta !== "undefined" && import.meta.env) || {};
 
 function firstDefined(...values) {

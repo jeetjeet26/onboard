@@ -11,7 +11,8 @@ This folder contains the operational frontend wiring for the multi-page onboardi
 - `../internal-company.html` (company directory manager)
 - `../internal-signup.html` (invite-only internal signup)
 - `src/config.js` (Supabase config)
-- `src/supabase.js` (Supabase client)
+- `src/supabase.ts` (typed Supabase client)
+- `src/database.types.ts` (generated Supabase database types)
 - `src/api.js` (RPC wrappers)
 - `src/stages.js` (canonical seven-stage tracker labels and display rules)
 - `src/navigation.js` (shared role-aware navigation and notices)
@@ -37,8 +38,19 @@ Open:
 
 ```bash
 npm run test
+npm run lint
+npm run typecheck
+npm run check:sql-invariants
 npm run build
 ```
+
+## Production notes
+
+- Run `npm run build` before `npm start`; the Node server serves `dist` when present.
+- Internal static pages are guarded both by the production server and by `src/internal-static-guard.js`.
+- Supabase config is injected via `/runtime-config.js` at runtime; do not bake production keys into HTML.
+- The Supabase browser client is bundled from npm instead of loaded from a CDN.
+- Keep browser data access behind authenticated RPCs. Do not add direct fallback reads from onboarding tables unless the RLS/policy contract is reviewed.
 
 ## Notes
 

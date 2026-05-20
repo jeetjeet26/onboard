@@ -2,8 +2,13 @@ const supabaseUrl = process.env.SUPABASE_URL || "";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 if (!supabaseUrl || !serviceRoleKey) {
-  console.log(
-    "Skipping DB company consistency check (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)."
+  const message =
+    "DB company consistency check requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.";
+  if (process.env.CI === "true") {
+    throw new Error(message);
+  }
+  console.warn(
+    `${message} Skipping locally; CI fails when these secrets are not configured.`
   );
   process.exit(0);
 }
