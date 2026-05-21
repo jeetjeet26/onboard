@@ -1,9 +1,11 @@
 import {
   completePortalSignup,
+  enqueueAutomationJob,
   getCurrentSession,
   getMyDashboardResources,
   getInternalPortalContext,
   getLatestSubmissionPayload,
+  getMyWorkflowState,
   getMyPortalContext,
   getOnboardingSnapshot,
   listMyCommunities,
@@ -17,6 +19,7 @@ import {
   signUpUser,
   submitIntake,
   uploadBrandAssets,
+  upsertMyWorkflowState,
   upsertTaskState,
   getMyDropboxFolder,
   uploadFileToDropbox,
@@ -118,6 +121,7 @@ const state = {
   dropboxFolder: null,
   taskStates: new Map(),
   launchWorkflow: null,
+  workflowSaveTimer: null,
 };
 
 const DEFAULT_TEAM_ASSIGNMENTS = [
@@ -134,8 +138,8 @@ const DEFAULT_QUICK_LINKS = [
   { label: "Dropbox Creative Folder", systemCode: "dropbox_creative_folder" },
   { label: "Google Drive Campaign Sheet", systemCode: "google_drive_campaign_sheet" },
   {
-    label: "Softr Client Portal",
-    systemCode: "softr_client_portal",
+    label: "Onboard Client Portal",
+    systemCode: "onboard_client_portal",
     defaultUrl: "https://clients.p11.com",
   },
 ];
@@ -951,7 +955,7 @@ async function hydrateLatestSubmissionForActiveCommunity() {
 
   state.latestSubmissionPayload = payload;
   hydrateFormFromPayload(payload);
-  loadWorkflowState();
+  await loadPersistedWorkflowState();
   renderWorkflowSurfaces();
   const stage = deriveDisplayStage(
     state.portalContext?.current_stage,
@@ -1142,6 +1146,26 @@ function loadWorkflowState() {
   return state.launchWorkflow;
 }
 
+async function loadPersistedWorkflowState() {
+  const fallback = loadWorkflowState();
+  try {
+    const remote = await getMyWorkflowState("launch");
+    if (remote && typeof remote === "object" && Object.keys(remote).length > 0) {
+      state.launchWorkflow = mergeWorkflowState(remote);
+      try {
+        localStorage.setItem(getWorkflowStorageKey(), JSON.stringify(state.launchWorkflow));
+      } catch (_error) {
+        // Local cache is best-effort; Supabase remains the source of truth.
+      }
+      return state.launchWorkflow;
+    }
+  } catch (error) {
+    console.warn("Unable to load persisted workflow state:", error.message);
+  }
+  state.launchWorkflow = fallback;
+  return state.launchWorkflow;
+}
+
 function saveWorkflowState() {
   if (!state.launchWorkflow) return;
   state.launchWorkflow.updatedAt = new Date().toISOString();
@@ -1150,6 +1174,87 @@ function saveWorkflowState() {
   } catch (error) {
     console.warn("Unable to save launch workflow state:", error.message);
   }
+  if (state.workflowSaveTimer) {
+    window.clearTimeout(state.workflowSaveTimer);
+  }
+  state.workflowSaveTimer = window.setTimeout(() => {
+    upsertMyWorkflowState("launch", state.launchWorkflow).catch((error) => {
+      console.warn("Unable to persist launch workflow state:", error.message);
+    });
+    enqueueLaunchAutomationJobs(state.launchWorkflow).catch((error) => {
+      console.warn("Unable to enqueue launch automations:", error.message);
+    });
+  }, 350);
+}
+
+async function enqueueLaunchAutomationJobs(workflow) {
+  const onboardingClientId = state.portalContext?.onboarding_client_id;
+  if (!onboardingClientId || !workflow?.launchAuthorized) return;
+  const communityName =
+    state.portalContext?.community_name ||
+    state.portalContext?.display_name ||
+    "Community";
+  const launchDate = workflow.launchDate || state.portalContext?.target_go_live_at || "";
+  const basePayload = {
+    trigger: "launch_authorized",
+    community_name: communityName,
+    launch_date: launchDate,
+  };
+  await Promise.all([
+    enqueueAutomationJob({
+      onboardingClientId,
+      providerCode: "portal",
+      actionCode: "stage_update",
+      idempotencyKey: `portal:stage_update:go_live:${onboardingClientId}`,
+      requestPayload: { ...basePayload, stage: "go_live" },
+      priority: 20,
+    }),
+    enqueueAutomationJob({
+      onboardingClientId,
+      providerCode: "slack",
+      actionCode: "notify_launch",
+      idempotencyKey: `slack:notify_launch:${onboardingClientId}`,
+      requestPayload: {
+        ...basePayload,
+        text: `${communityName} is authorized to launch${launchDate ? ` on ${launchDate}` : ""}.`,
+      },
+      priority: 60,
+    }),
+    enqueueAutomationJob({
+      onboardingClientId,
+      providerCode: "gmail",
+      actionCode: "launch_draft",
+      idempotencyKey: `gmail:launch_draft:${onboardingClientId}`,
+      requestPayload: {
+        ...basePayload,
+        to_email: state.session?.user?.email || "",
+        subject: `${communityName} campaigns are live`,
+        body_text: `Hi,\n\nYour campaigns for ${communityName} are live${launchDate ? ` as of ${launchDate}` : ""}. We'll monitor the initial learning period and follow up with reporting next steps.\n\nThank you,\nP11creative`,
+      },
+      priority: 70,
+    }),
+    enqueueAutomationJob({
+      onboardingClientId,
+      providerCode: "accelo",
+      actionCode: "update_project_status",
+      idempotencyKey: `accelo:update_project_status:launch:${onboardingClientId}`,
+      requestPayload: {
+        ...basePayload,
+        endpoint: "jobs/status",
+        method: "POST",
+        body: { onboarding_client_id: onboardingClientId, status: "active" },
+      },
+      priority: 100,
+    }),
+    enqueueAutomationJob({
+      onboardingClientId,
+      providerCode: "google_drive",
+      actionCode: "move_to_active",
+      idempotencyKey: `google_drive:move_to_active:${onboardingClientId}`,
+      requestPayload: basePayload,
+      priority: 110,
+    }),
+  ]);
 }
 
 function workflowStatusClass(value = "") {
@@ -1640,6 +1745,8 @@ async function switchActiveCommunity(onboardingClientId) {
     await refreshCommunitySwitcher(context.onboarding_client_id);
     await loadPersistedTaskStates();
     await hydrateLatestSubmissionForActiveCommunity();
+    await loadPersistedWorkflowState();
+    renderWorkflowSurfaces();
     loadSavedIntakeDraft();
   } finally {
     state.switchingCommunity = false;
@@ -2736,6 +2843,8 @@ async function bootstrapFromRemote() {
     applySnapshot(snapshot);
     await loadPersistedTaskStates();
     await hydrateLatestSubmissionForActiveCommunity();
+    await loadPersistedWorkflowState();
+    renderWorkflowSurfaces();
     loadSavedIntakeDraft();
   } catch (error) {
     console.warn("Unable to load remote onboarding snapshot:", error.message);

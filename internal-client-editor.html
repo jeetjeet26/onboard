@@ -412,6 +412,88 @@
       .dropbox-hidden {
         display: none !important;
       }
+
+      .accelo-enrichment {
+        margin-top: 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fafaf8;
+        padding: 12px 14px;
+        font-size: 12px;
+      }
+
+      .accelo-enrichment h3 {
+        margin: 0 0 8px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .accelo-enrichment-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .accelo-enrichment-section {
+        min-width: 0;
+      }
+
+      .accelo-enrichment-section .k {
+        color: var(--gray);
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin-bottom: 4px;
+      }
+
+      .accelo-enrichment-section ul {
+        margin: 0;
+        padding-left: 16px;
+      }
+
+      .accelo-enrichment-section li {
+        margin-bottom: 3px;
+        white-space: normal;
+      }
+
+      .accelo-candidate-list {
+        display: grid;
+        gap: 6px;
+      }
+
+      .accelo-candidate-btn {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #fff;
+        padding: 8px 10px;
+        text-align: left;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .accelo-candidate-btn:hover,
+      .accelo-candidate-btn.active {
+        border-color: var(--red);
+        background: rgba(250, 70, 20, 0.06);
+      }
+
+      .accelo-candidate-title {
+        font-weight: 800;
+        color: var(--charcoal);
+      }
+
+      .accelo-candidate-meta {
+        margin-top: 2px;
+        color: var(--gray);
+        font-size: 11px;
+      }
+
+      .accelo-enrichment.empty {
+        display: none;
+      }
     </style>
     <link rel="stylesheet" href="/frontend/src/styles/shared.css" />
   </head>
@@ -455,9 +537,14 @@
                 />
                 <button class="btn" id="companySearchBtn" type="button">Search</button>
                 <button class="btn" id="clearCompanyBtn" type="button">Clear</button>
+                <button class="btn" id="refreshAcceloEnrichmentBtn" type="button">Refresh Accelo Enrichment</button>
               </div>
               <div class="company-results" id="companyResults"></div>
               <div class="selected-company" id="selectedCompanyLabel"></div>
+              <div class="accelo-enrichment empty" id="acceloEnrichmentCard">
+                <h3>Accelo Enrichment</h3>
+                <div class="accelo-enrichment-grid" id="acceloEnrichmentGrid"></div>
+              </div>
             </div>
 
             <div class="field full">

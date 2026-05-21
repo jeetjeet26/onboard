@@ -1450,6 +1450,102 @@ begin
     jsonb_build_object('trigger', 'ingest_submission')
   );
   perform onboarding.auto_process_canonical_sync(p_onboarding_client_id);
+  perform onboarding.enqueue_automation_job(
+    p_onboarding_client_id,
+    'dropbox',
+    'create_client_folder',
+    'dropbox:create_client_folder:' || p_onboarding_client_id::text,
+    jsonb_build_object('trigger', 'ingest_submission'),
+    40,
+    now()
+  );
+  perform onboarding.enqueue_automation_job(
+    p_onboarding_client_id,
+    'slack',
+    'notify_new_client',
+    'slack:notify_new_client:' || p_onboarding_client_id::text,
+    jsonb_build_object(
+      'trigger', 'ingest_submission',
+      'text', 'New onboarding intake submitted: ' || coalesce(v_company_name, 'Community #' || p_onboarding_client_id::text)
+    ),
+    60,
+    now()
+  );
+  perform onboarding.enqueue_automation_job(
+    p_onboarding_client_id,
+    'basecamp',
+    'create_project',
+    'basecamp:create_project:' || p_onboarding_client_id::text,
+    jsonb_build_object(
+      'trigger', 'ingest_submission',
+      'endpoint', 'projects.json',
+      'method', 'POST',
+      'body', jsonb_build_object(
+        'name', coalesce(v_company_name, 'Community #' || p_onboarding_client_id::text) || ' - Onboarding',
+        'description', 'P11creative onboarding project created from the Onboard portal.'
+      )
+    ),
+    80,
+    now()
+  );
+  perform onboarding.enqueue_automation_job(
+    p_onboarding_client_id,
+    'google_drive',
+    'create_onboarding_folder',
+    'google_drive:create_onboarding_folder:' || p_onboarding_client_id::text,
+    jsonb_build_object(
+      'trigger', 'ingest_submission',
+      'endpoint', 'files',
+      'method', 'POST',
+      'body', jsonb_build_object(
+        'name', coalesce(v_company_name, 'Community #' || p_onboarding_client_id::text),
+        'mimeType', 'application/vnd.google-apps.folder'
+      )
+    ),
+    90,
+    now()
+  );
+  perform onboarding.enqueue_automation_job(
+    p_onboarding_client_id,
+    'gmail',
+    'kickoff_draft',
+    'gmail:kickoff_draft:' || p_onboarding_client_id::text,
+    jsonb_build_object(
+      'trigger', 'ingest_submission',
+      'to_email', v_reporting_contact_email,
+      'subject', 'Welcome to P11creative onboarding',
+      'body_text', 'Hi ' || coalesce(v_reporting_contact_name, 'there') || E',\n\nYour P11creative onboarding workspace is ready. Please use the portal to review next steps and complete platform access.\n\nThank you,\nP11creative'
+    ),
+    70,
+    now()
+  );
+  perform onboarding.enqueue_automation_job(
+    p_onboarding_client_id,
+    'portal',
+    'access_reminder_check',
+    'portal:access_reminder_check:' || p_onboarding_client_id::text,
+    jsonb_build_object('trigger', 'ingest_submission'),
+    120,
+    now() + interval '48 hours'
+  );
+  perform onboarding.enqueue_automation_job(
+    p_onboarding_client_id,
+    'accelo',
+    'upsert_onboarding_records',
+    'accelo:upsert_onboarding_records:' || p_onboarding_client_id::text,
+    jsonb_build_object(
+      'trigger', 'ingest_submission',
+      'endpoint', 'companies',
+      'method', 'POST',
+      'body', jsonb_build_object(
+        'name', v_company_name,
+        'website', v_website_url,
+        'phone', v_community_phone
+      )
+    ),
+    100,
+    now()
+  );
 
   return v_submission_id;
 end;
@@ -2313,13 +2409,15 @@ grant select on onboarding.onboarding_platform_access_v to authenticated, servic
 grant select on onboarding.onboarding_readiness_v to authenticated, service_role;
 grant select on onboarding.portal_client_dashboard_v to authenticated, service_role;
 grant select on onboarding.portal_internal_dashboard_v to authenticated, service_role;
+grant select on onboarding.accelo_company_enrichment_v to authenticated, service_role;
 revoke insert, update, delete on
   onboarding.onboarding_company_360_v,
   onboarding.onboarding_services_v,
   onboarding.onboarding_platform_access_v,
   onboarding.onboarding_readiness_v,
   onboarding.portal_client_dashboard_v,
-  onboarding.portal_internal_dashboard_v
+  onboarding.portal_internal_dashboard_v,
+  onboarding.accelo_company_enrichment_v
 from anon, authenticated;
 
 -- -----------------------------------------------------------------------------
@@ -2858,6 +2956,352 @@ from public."Company" c
 where c."Name" is not null
   and length(trim(c."Name")) > 0
 on conflict do nothing;
+
+create or replace function public.internal_sync_company_directory_from_accelo()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_inserted integer := 0;
+  v_updated integer := 0;
+begin
+  if auth.uid() is not null and not onboarding.is_internal_user() then
+    raise exception 'Internal access required' using errcode = '42501';
+  end if;
+
+  with source_rows as (
+    select
+      c."ID" as public_company_id,
+      nullif(trim(c."Name"), '') as company_name,
+      onboarding.normalize_company_name(c."Name") as normalized_name,
+      jsonb_build_object(
+        'source', 'public.Company',
+        'company_id', c."ID",
+        'date_created', c."DateCreated",
+        'when_upserted_into_data_store', c."WhenUpsertedIntoDataStore"
+      ) as metadata_json
+    from public."Company" c
+    where c."Name" is not null
+      and length(trim(c."Name")) > 0
+      and coalesce(c."IsDeleted", false) = false
+  ),
+  inserted as (
+    insert into onboarding.company_directory (
+      public_company_id,
+      company_name,
+      normalized_name,
+      created_via,
+      metadata_json
+    )
+    select
+      s.public_company_id,
+      s.company_name,
+      s.normalized_name,
+      'accelo_sync',
+      s.metadata_json
+    from source_rows s
+    where not exists (
+      select 1
+      from onboarding.company_directory d
+      where d.public_company_id = s.public_company_id
+    )
+    on conflict do nothing
+    returning 1
+  ),
+  updated as (
+    update onboarding.company_directory d
+    set company_name = s.company_name,
+        normalized_name = s.normalized_name,
+        metadata_json = coalesce(d.metadata_json, '{}'::jsonb) || s.metadata_json,
+        updated_at = now()
+    from source_rows s
+    where d.public_company_id = s.public_company_id
+      and (
+        d.company_name is distinct from s.company_name
+        or d.normalized_name is distinct from s.normalized_name
+      )
+    returning 1
+  )
+  select
+    (select count(*)::integer from inserted),
+    (select count(*)::integer from updated)
+  into v_inserted, v_updated;
+
+  return jsonb_build_object(
+    'status', 'ok',
+    'inserted', coalesce(v_inserted, 0),
+    'updated', coalesce(v_updated, 0)
+  );
+end;
+$$;
+
+create or replace view onboarding.accelo_company_enrichment_v
+with (security_invoker = true)
+as
+select
+  cd.id as company_directory_id,
+  cd.public_company_id,
+  cd.company_name as directory_company_name,
+  pc."ID" as accelo_company_id,
+  pc."Name" as accelo_company_name,
+  pc."Website" as website_url,
+  pc."Phone" as company_phone,
+  pc."Fax" as company_fax,
+  pc."DateCreated" as accelo_date_created,
+  pc."DateModified" as accelo_date_modified,
+  pc."WhenUpsertedIntoDataStore" as accelo_synced_at,
+  pc."RawPayload" as company_raw_payload,
+  jsonb_strip_nulls(
+    jsonb_build_object(
+      'address_id', a."ID",
+      'full', a."Full",
+      'street1', a."Street1",
+      'street2', a."Street2",
+      'city', a."City",
+      'state', coalesce(a.state, a."StateID"::text),
+      'postal', coalesce(a."Postal", a.zipcode),
+      'country', a.country,
+      'raw', a."RawPayload"
+    )
+  ) as address_json,
+  coalesce(company_profile.profile_values, '{}'::jsonb) as company_profile_json,
+  coalesce(contacts.contacts_json, '[]'::jsonb) as contacts_json,
+  coalesce(contracts.contracts_json, '[]'::jsonb) as contracts_json,
+  coalesce(jobs.jobs_json, '[]'::jsonb) as jobs_json,
+  coalesce(tasks.tasks_json, '[]'::jsonb) as tasks_json,
+  jsonb_strip_nulls(
+    jsonb_build_object(
+      'community_name', pc."Name",
+      'website_url', pc."Website",
+      'community_phone', pc."Phone",
+      'community_address', nullif(trim(concat_ws(
+        ', ',
+        nullif(a."Street1", ''),
+        nullif(a."Street2", ''),
+        nullif(a."City", ''),
+        nullif(coalesce(a."Postal", a.zipcode), '')
+      )), ''),
+      'address_street1', a."Street1",
+      'address_street2', a."Street2",
+      'address_city', a."City",
+      'address_state', coalesce(a.state, a."StateID"::text),
+      'address_postal', coalesce(a."Postal", a.zipcode),
+      'property_type', company_profile.profile_values ->> 'Property Type',
+      'parent_company', company_profile.profile_values ->> 'Parent Company',
+      'reporting_primary_name', contacts.primary_contact ->> 'full_name',
+      'reporting_primary_email', contacts.primary_contact ->> 'email',
+      'reporting_primary_phone', contacts.primary_contact ->> 'phone'
+    )
+  ) as prefill_fields,
+  jsonb_strip_nulls(
+    jsonb_build_object(
+      'selected_services', contracts.service_types,
+      'job_service_categories', jobs.service_categories,
+      'job_service_subcategories', jobs.service_subcategories,
+      'monthly_sem_budget', contracts.sem_budget,
+      'monthly_social_budget', contracts.social_budget,
+      'account_manager', contracts.account_manager,
+      'contract_ids', contracts.contract_ids,
+      'job_ids', jobs.job_ids,
+      'recent_contract_title', contracts.recent_contract_title,
+      'recent_job_title', jobs.recent_job_title
+    )
+  ) as suggested_fields,
+  jsonb_strip_nulls(
+    jsonb_build_object(
+      'company_internal_notes', company_profile.profile_values ->> 'Internal Notes',
+      'special_billing_instructions', company_profile.profile_values ->> 'Special Billing Instructions',
+      'contract_internal_notes', contracts.internal_notes,
+      'job_internal_notes', jobs.internal_notes,
+      'invoicing_notes_for_ops', jobs.invoicing_notes,
+      'invoice_description_client_facing', jobs.invoice_descriptions,
+      'recent_task_titles', tasks.recent_task_titles
+    )
+  ) as admin_context
+from onboarding.company_directory cd
+left join public."Company" pc on pc."ID" = cd.public_company_id
+left join public."Address" a on a."ID" = pc."PostalAddress"
+left join lateral (
+  select jsonb_object_agg(cpv.field_name, cpv.value order by cpv.date_modified desc nulls last) as profile_values
+  from public."CompanyProfileValue" cpv
+  where (cpv.link_id = pc."ID"::text or cpv."ParentRecordID" = pc."ID"::text)
+    and nullif(cpv.field_name, '') is not null
+    and nullif(cpv.value, '') is not null
+    and coalesce(cpv."IsDeleted", false) = false
+) company_profile on true
+left join lateral (
+  with contact_rows as (
+    select
+      jsonb_strip_nulls(
+        jsonb_build_object(
+          'affiliation_id', af."ID",
+          'contact_id', ct."ID",
+          'full_name', nullif(trim(concat_ws(' ', ct."Firstname", ct."Lastname")), ''),
+          'email', coalesce(nullif(af."Email", ''), nullif(ct.email, '')),
+          'phone', coalesce(nullif(af."Phone", ''), nullif(af."Mobile", ''), nullif(ct.mobile, '')),
+          'title', coalesce(nullif(af."Position", ''), nullif(ct."Title", '')),
+          'is_default', pc."DefaultAffiliation" = af."ID",
+          'raw', jsonb_build_object('affiliation', af."RawPayload", 'contact', ct."RawPayload")
+        )
+      ) as contact_json,
+      pc."DefaultAffiliation" = af."ID" as is_default,
+      af."ID"
+    from public."Affiliation" af
+    left join public."Contact" ct on ct."ID" = af."Contact"
+    where af."Company" = pc."ID"
+      and coalesce(af."IsDeleted", false) = false
+      and coalesce(ct."IsDeleted", false) = false
+    order by case when pc."DefaultAffiliation" = af."ID" then 0 else 1 end, af."ID"
+  )
+  select
+    coalesce(jsonb_agg(contact_json order by case when is_default then 0 else 1 end, "ID"), '[]'::jsonb) as contacts_json,
+    (jsonb_agg(contact_json order by case when is_default then 0 else 1 end, "ID") -> 0) as primary_contact
+  from contact_rows
+) contacts on true
+left join lateral (
+  with contract_rows as (
+    select
+      c."ID",
+      c."Title",
+      c.status,
+      c.type,
+      c."DateStarted",
+      c."SourceModifiedAt" as "DateModified",
+      c."Manager",
+      c."Job",
+      c."RawPayload",
+      coalesce(
+        (
+          select jsonb_object_agg(cpv.field_name, coalesce(cpv.value, cpv.values::text))
+          from public."ContractProfileValue" cpv
+          where (cpv.link_id = c."ID"::text or cpv."ParentRecordID" = c."ID"::text)
+            and nullif(cpv.field_name, '') is not null
+            and coalesce(cpv.value, cpv.values::text) is not null
+            and coalesce(cpv."IsDeleted", false) = false
+        ),
+        '{}'::jsonb
+      ) as profile_values
+    from public."Contract" c
+    where c."Company" = pc."ID"
+      and coalesce(c."IsDeleted", false) = false
+    order by coalesce(c."DateStarted", 0) desc, coalesce(c."DateModified", 0) desc, c."ID" desc
+    limit 10
+  )
+  select
+    coalesce(
+      jsonb_agg(
+        jsonb_strip_nulls(
+          jsonb_build_object(
+            'contract_id', cr."ID",
+            'title', cr."Title",
+            'status', cr.status,
+            'type', cr.type,
+            'manager_id', cr."Manager",
+            'job_id', cr."Job",
+            'profile_values', cr.profile_values,
+            'raw', cr."RawPayload"
+          )
+        )
+        order by coalesce(cr."DateStarted", 0) desc, coalesce(cr."DateModified", 0) desc, cr."ID" desc
+      ),
+      '[]'::jsonb
+    ) as contracts_json,
+    array_remove(array_agg(distinct cr.profile_values ->> 'Service Type'), null) as service_types,
+    nullif(max(cr.profile_values ->> 'SEM - Monthly P11 Ad Spend'), '') as sem_budget,
+    nullif(max(cr.profile_values ->> 'Social - Monthly P11 Spend'), '') as social_budget,
+    nullif(max(cr.profile_values ->> 'Account Manager'), '') as account_manager,
+    array_remove(array_agg(distinct cr."ID"::text), null) as contract_ids,
+    (array_agg(cr."Title" order by coalesce(cr."DateStarted", 0) desc, coalesce(cr."DateModified", 0) desc, cr."ID" desc))[1] as recent_contract_title,
+    array_remove(array_agg(distinct cr.profile_values ->> 'Internal Notes'), null) as internal_notes
+  from contract_rows cr
+) contracts on true
+left join lateral (
+  with job_rows as (
+    select
+      j."ID",
+      j."Title",
+      j.status,
+      j.job_type,
+      j."DateStarted",
+      j."DateDue",
+      j."DateCompleted",
+      j."DateModified",
+      j."Manager",
+      j."RawPayload",
+      coalesce(
+        (
+          select jsonb_object_agg(jpv.field_name, jpv.value)
+          from public."JobProfileValue" jpv
+          where (jpv.link_id = j."ID"::text or jpv."ParentRecordID" = j."ID"::text)
+            and nullif(jpv.field_name, '') is not null
+            and nullif(jpv.value, '') is not null
+            and coalesce(jpv."IsDeleted", false) = false
+        ),
+        '{}'::jsonb
+      ) as profile_values
+    from public."Job" j
+    where j."Company" = pc."ID"
+      and coalesce(j."IsDeleted", false) = false
+    order by coalesce(j."DateModified", 0) desc, j."ID" desc
+    limit 10
+  )
+  select
+    coalesce(
+      jsonb_agg(
+        jsonb_strip_nulls(
+          jsonb_build_object(
+            'job_id', jr."ID",
+            'title', jr."Title",
+            'status', jr.status,
+            'type', jr.job_type,
+            'manager_id', jr."Manager",
+            'date_due', jr."DateDue",
+            'date_completed', jr."DateCompleted",
+            'profile_values', jr.profile_values,
+            'raw', jr."RawPayload"
+          )
+        )
+        order by coalesce(jr."DateModified", 0) desc, jr."ID" desc
+      ),
+      '[]'::jsonb
+    ) as jobs_json,
+    array_remove(array_agg(distinct jr.profile_values ->> 'Service Category'), null) as service_categories,
+    array_remove(
+      array_agg(distinct coalesce(jr.profile_values ->> 'Service Subcategory', jr.profile_values ->> 'Service Sub-Category (old)')),
+      null
+    ) as service_subcategories,
+    array_remove(array_agg(distinct jr."ID"::text), null) as job_ids,
+    (array_agg(jr."Title" order by coalesce(jr."DateModified", 0) desc, jr."ID" desc))[1] as recent_job_title,
+    array_remove(array_agg(distinct jr.profile_values ->> 'Internal Notes'), null) as internal_notes,
+    array_remove(array_agg(distinct jr.profile_values ->> 'Invoicing Notes (for Ops)'), null) as invoicing_notes,
+    array_remove(array_agg(distinct jr.profile_values ->> 'Invoice Description (Client Facing)'), null) as invoice_descriptions
+  from job_rows jr
+) jobs on true
+left join lateral (
+  select
+    coalesce(
+      jsonb_agg(
+        jsonb_strip_nulls(
+          jsonb_build_object(
+            'task_id', t."ID",
+            'title', t."Title",
+            'status', t.status,
+            'due_at', t."DateDue",
+            'completed_at', t."DateCompleted",
+            'job_id', t."TaskJob"
+          )
+        )
+        order by coalesce(t."DateModified", 0) desc, t."ID" desc
+      ),
+      '[]'::jsonb
+    ) as tasks_json,
+    array_remove((array_agg(t."Title" order by coalesce(t."DateModified", 0) desc, t."ID" desc))[1:10], null) as recent_task_titles
+  from public."Task" t
+  where t."Company" = pc."ID"
+    and coalesce(t."IsDeleted", false) = false
+) tasks on true;
 
 create or replace view onboarding.v_portal_user_membership
 with (security_invoker = true)
@@ -4471,10 +4915,14 @@ begin
 end;
 $$;
 
+drop function if exists public.internal_list_companies(text, integer, integer);
+
 create or replace function public.internal_list_companies(
   p_search text default null,
   p_limit integer default 200,
-  p_offset integer default 0
+  p_offset integer default 0,
+  p_sort_by text default 'company_name',
+  p_sort_dir text default 'asc'
 )
 returns jsonb
 language plpgsql
@@ -4485,6 +4933,8 @@ declare
   v_search text := nullif(trim(coalesce(p_search, '')), '');
   v_limit integer := greatest(1, least(coalesce(p_limit, 200), 500));
   v_offset integer := greatest(coalesce(p_offset, 0), 0);
+  v_sort_by text := lower(trim(coalesce(p_sort_by, 'company_name')));
+  v_sort_dir text := lower(trim(coalesce(p_sort_dir, 'asc')));
 begin
   if auth.uid() is null then
     raise exception 'Authentication required' using errcode = '28000';
@@ -4494,12 +4944,20 @@ begin
     raise exception 'Internal access required' using errcode = '42501';
   end if;
 
+  if v_sort_by not in ('company_name', 'community_count', 'date_added', 'last_community_updated_at') then
+    v_sort_by := 'company_name';
+  end if;
+  if v_sort_dir not in ('asc', 'desc') then
+    v_sort_dir := 'asc';
+  end if;
+
   return (
     with filtered as (
       select
         d.id as company_directory_id,
         d.company_name,
         d.public_company_id,
+        d.created_at as date_added,
         count(c.id)::integer as community_count,
         max(c.updated_at) as last_community_updated_at
       from onboarding.company_directory d
@@ -4513,7 +4971,16 @@ begin
     paged as (
       select *
       from filtered f
-      order by f.company_name asc, f.company_directory_id asc
+      order by
+        case when v_sort_by = 'company_name' and v_sort_dir = 'asc' then f.company_name end asc nulls last,
+        case when v_sort_by = 'company_name' and v_sort_dir = 'desc' then f.company_name end desc nulls last,
+        case when v_sort_by = 'community_count' and v_sort_dir = 'asc' then f.community_count end asc nulls last,
+        case when v_sort_by = 'community_count' and v_sort_dir = 'desc' then f.community_count end desc nulls last,
+        case when v_sort_by = 'date_added' and v_sort_dir = 'asc' then f.date_added end asc nulls last,
+        case when v_sort_by = 'date_added' and v_sort_dir = 'desc' then f.date_added end desc nulls last,
+        case when v_sort_by = 'last_community_updated_at' and v_sort_dir = 'asc' then f.last_community_updated_at end asc nulls last,
+        case when v_sort_by = 'last_community_updated_at' and v_sort_dir = 'desc' then f.last_community_updated_at end desc nulls last,
+        f.company_directory_id asc
       limit v_limit
       offset v_offset
     )
@@ -4526,10 +4993,20 @@ begin
               'company_directory_id', p.company_directory_id,
               'company_name', p.company_name,
               'public_company_id', p.public_company_id,
+              'date_added', p.date_added,
               'community_count', p.community_count,
               'last_community_updated_at', p.last_community_updated_at
             )
-            order by p.company_name asc, p.company_directory_id asc
+            order by
+              case when v_sort_by = 'company_name' and v_sort_dir = 'asc' then p.company_name end asc nulls last,
+              case when v_sort_by = 'company_name' and v_sort_dir = 'desc' then p.company_name end desc nulls last,
+              case when v_sort_by = 'community_count' and v_sort_dir = 'asc' then p.community_count end asc nulls last,
+              case when v_sort_by = 'community_count' and v_sort_dir = 'desc' then p.community_count end desc nulls last,
+              case when v_sort_by = 'date_added' and v_sort_dir = 'asc' then p.date_added end asc nulls last,
+              case when v_sort_by = 'date_added' and v_sort_dir = 'desc' then p.date_added end desc nulls last,
+              case when v_sort_by = 'last_community_updated_at' and v_sort_dir = 'asc' then p.last_community_updated_at end asc nulls last,
+              case when v_sort_by = 'last_community_updated_at' and v_sort_dir = 'desc' then p.last_community_updated_at end desc nulls last,
+              p.company_directory_id asc
           )
           from paged p
         ),
@@ -4538,7 +5015,9 @@ begin
       'total_count',
       (select count(*)::integer from filtered),
       'limit', v_limit,
-      'offset', v_offset
+      'offset', v_offset,
+      'sort_by', v_sort_by,
+      'sort_dir', v_sort_dir
     )
   );
 end;
@@ -4984,6 +5463,85 @@ begin
         onboarding.onboarding_website.technical_notes
       ),
       updated_at = now();
+  end if;
+
+  if v_operation = 'created' then
+    perform onboarding.enqueue_automation_job(
+      v_onboarding_client_id,
+      'dropbox',
+      'create_client_folder',
+      'dropbox:create_client_folder:' || v_onboarding_client_id::text,
+      jsonb_build_object(
+        'trigger', 'internal_upsert_client_info',
+        'folder_name', coalesce(v_community_name, v_company_name)
+      ),
+      40,
+      now()
+    );
+    perform onboarding.enqueue_automation_job(
+      v_onboarding_client_id,
+      'slack',
+      'notify_new_client',
+      'slack:notify_new_client:' || v_onboarding_client_id::text,
+      jsonb_build_object(
+        'trigger', 'internal_upsert_client_info',
+        'text', 'New onboarding client created: ' || coalesce(v_community_name, v_company_name, 'Client #' || v_onboarding_client_id::text)
+      ),
+      60,
+      now()
+    );
+    perform onboarding.enqueue_automation_job(
+      v_onboarding_client_id,
+      'basecamp',
+      'create_project',
+      'basecamp:create_project:' || v_onboarding_client_id::text,
+      jsonb_build_object(
+        'trigger', 'internal_upsert_client_info',
+        'endpoint', 'projects.json',
+        'method', 'POST',
+        'body', jsonb_build_object(
+          'name', coalesce(v_community_name, v_company_name, 'Client #' || v_onboarding_client_id::text) || ' - Onboarding',
+          'description', 'P11creative onboarding project created from the Onboard portal.'
+        )
+      ),
+      80,
+      now()
+    );
+    perform onboarding.enqueue_automation_job(
+      v_onboarding_client_id,
+      'google_drive',
+      'create_onboarding_folder',
+      'google_drive:create_onboarding_folder:' || v_onboarding_client_id::text,
+      jsonb_build_object(
+        'trigger', 'internal_upsert_client_info',
+        'endpoint', 'files',
+        'method', 'POST',
+        'body', jsonb_build_object(
+          'name', coalesce(v_community_name, v_company_name, 'Client #' || v_onboarding_client_id::text),
+          'mimeType', 'application/vnd.google-apps.folder'
+        )
+      ),
+      90,
+      now()
+    );
+    perform onboarding.enqueue_automation_job(
+      v_onboarding_client_id,
+      'accelo',
+      'upsert_onboarding_records',
+      'accelo:upsert_onboarding_records:' || v_onboarding_client_id::text,
+      jsonb_build_object(
+        'trigger', 'internal_upsert_client_info',
+        'endpoint', 'companies',
+        'method', 'POST',
+        'body', jsonb_build_object(
+          'name', coalesce(v_community_name, v_company_name),
+          'website', nullif(trim(coalesce(p_website_url, '')), ''),
+          'phone', nullif(trim(coalesce(p_community_phone, '')), '')
+        )
+      ),
+      100,
+      now()
+    );
   end if;
 
   return jsonb_build_object(
@@ -5596,7 +6154,8 @@ grant execute on function public.upsert_my_platform_access(text, boolean, text) 
 grant execute on function public.upsert_my_task_state(text, boolean, text, text) to authenticated, service_role;
 grant execute on function public.get_internal_portal_context() to authenticated, service_role;
 grant execute on function public.internal_list_clients(text, onboarding.onboarding_stage, onboarding.onboarding_status, integer, integer, bigint) to authenticated, service_role;
-grant execute on function public.internal_list_companies(text, integer, integer) to authenticated, service_role;
+grant execute on function public.internal_list_companies(text, integer, integer, text, text) to authenticated, service_role;
+grant execute on function public.internal_sync_company_directory_from_accelo() to authenticated, service_role;
 grant execute on function public.internal_upsert_company_directory(bigint, text, bigint) to authenticated, service_role;
 grant execute on function public.internal_get_client_detail(bigint) to authenticated, service_role;
 grant execute on function public.internal_upsert_client_info(bigint, bigint, text, text, onboarding.onboarding_stage, onboarding.onboarding_status, date, text, text, text, text, text, text, text, text, text, text, text, text, text, text) to authenticated, service_role;
@@ -5911,6 +6470,853 @@ grant execute on function public.internal_get_dropbox_folder_binding(bigint) to 
 grant execute on function public.internal_clear_dropbox_folder_binding(bigint) to authenticated, service_role;
 grant execute on function public.get_my_dropbox_folder() to authenticated, service_role;
 grant execute on function public.can_access_onboarding_client(bigint) to authenticated, service_role;
+
+-- -----------------------------------------------------------------------------
+-- Automation Platform Orchestration
+-- -----------------------------------------------------------------------------
+-- Durable integration metadata, provider job queue, workflow state, email drafts,
+-- and Accelo read/write binding records. Secret values must stay in Supabase
+-- function secrets or provider vaults; metadata_json is for non-sensitive IDs,
+-- template mappings, channel names, and operational status only.
+create table if not exists onboarding.integration_connection (
+  id bigint generated always as identity primary key,
+  provider_code text not null unique,
+  display_name text not null,
+  is_enabled boolean not null default false,
+  connection_status text not null default 'not_configured',
+  read_scope text,
+  write_scope text,
+  connected_account_label text,
+  metadata_json jsonb not null default '{}'::jsonb,
+  last_verified_at timestamptz,
+  last_error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint integration_connection_provider_chk check (
+    provider_code in ('accelo', 'basecamp', 'dropbox', 'google_drive', 'gmail', 'slack')
+  ),
+  constraint integration_connection_status_chk check (
+    connection_status in ('not_configured', 'configured', 'connected', 'degraded', 'error', 'disabled')
+  )
+);
+
+insert into onboarding.integration_connection (
+  provider_code,
+  display_name,
+  is_enabled,
+  connection_status,
+  read_scope,
+  write_scope,
+  metadata_json
+)
+values
+  (
+    'accelo',
+    'Accelo',
+    true,
+    'configured',
+    'read(all) via accelo_pipeline.py',
+    'pending write credential confirmation',
+    jsonb_build_object(
+      'read_source', 'accelo_pipeline.py',
+      'deployment_env', 'ACCELO_DEPLOYMENT',
+      'required_env', jsonb_build_array('ACCELO_CLIENT_ID', 'ACCELO_CLIENT_SECRET', 'SUPABASE_DB_URL'),
+      'write_actions', jsonb_build_array('search_company', 'create_company', 'upsert_contact', 'create_contract', 'create_job', 'update_profile_value', 'update_project_status')
+    )
+  ),
+  (
+    'basecamp',
+    'Basecamp',
+    false,
+    'not_configured',
+    null,
+    'pending OAuth/API token',
+    jsonb_build_object('required_env', jsonb_build_array('BASECAMP_ACCOUNT_ID', 'BASECAMP_ACCESS_TOKEN'))
+  ),
+  (
+    'dropbox',
+    'Dropbox',
+    true,
+    'configured',
+    'configured in onboarding.dropbox_integration',
+    'configured in onboarding.dropbox_integration',
+    jsonb_build_object('operational_table', 'onboarding.dropbox_integration')
+  ),
+  (
+    'google_drive',
+    'Google Drive',
+    false,
+    'not_configured',
+    null,
+    'pending OAuth/service account',
+    jsonb_build_object('required_env', jsonb_build_array('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_DRIVE_TEMPLATE_IDS'))
+  ),
+  (
+    'gmail',
+    'Gmail',
+    false,
+    'not_configured',
+    null,
+    'pending compose/send scope',
+    jsonb_build_object('required_env', jsonb_build_array('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GMAIL_SENDER_EMAIL'))
+  ),
+  (
+    'slack',
+    'Slack',
+    false,
+    'not_configured',
+    null,
+    'incoming webhook',
+    jsonb_build_object('required_env', jsonb_build_array('SLACK_WEBHOOK_URL'))
+  )
+on conflict (provider_code) do update set
+  display_name = excluded.display_name,
+  read_scope = coalesce(onboarding.integration_connection.read_scope, excluded.read_scope),
+  write_scope = coalesce(onboarding.integration_connection.write_scope, excluded.write_scope),
+  metadata_json = onboarding.integration_connection.metadata_json || excluded.metadata_json,
+  updated_at = now();
+
+create table if not exists onboarding.automation_job (
+  id bigint generated always as identity primary key,
+  onboarding_client_id bigint references onboarding.onboarding_client(id) on delete cascade,
+  provider_code text not null,
+  action_code text not null,
+  status text not null default 'queued',
+  priority integer not null default 100,
+  idempotency_key text not null,
+  scheduled_for timestamptz not null default now(),
+  started_at timestamptz,
+  completed_at timestamptz,
+  attempt_count integer not null default 0,
+  max_attempts integer not null default 5,
+  request_payload jsonb not null default '{}'::jsonb,
+  response_payload jsonb not null default '{}'::jsonb,
+  external_id text,
+  external_url text,
+  last_error text,
+  locked_at timestamptz,
+  locked_by text,
+  created_by uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint automation_job_provider_chk check (
+    provider_code in ('accelo', 'basecamp', 'dropbox', 'google_drive', 'gmail', 'slack', 'portal')
+  ),
+  constraint automation_job_status_chk check (
+    status in ('queued', 'running', 'succeeded', 'failed', 'blocked', 'cancelled', 'skipped')
+  ),
+  unique (provider_code, action_code, idempotency_key)
+);
+
+create index if not exists idx_automation_job_status
+  on onboarding.automation_job(status, scheduled_for, priority, id);
+
+create index if not exists idx_automation_job_client
+  on onboarding.automation_job(onboarding_client_id, created_at desc);
+
+create table if not exists onboarding.workflow_state (
+  onboarding_client_id bigint not null references onboarding.onboarding_client(id) on delete cascade,
+  workflow_code text not null default 'launch',
+  state_json jsonb not null default '{}'::jsonb,
+  updated_by uuid,
+  updated_by_source text not null default 'portal_ui',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (onboarding_client_id, workflow_code)
+);
+
+create table if not exists onboarding.email_draft (
+  id bigint generated always as identity primary key,
+  onboarding_client_id bigint references onboarding.onboarding_client(id) on delete cascade,
+  provider_code text not null default 'gmail',
+  draft_type text not null,
+  status text not null default 'queued',
+  to_email text,
+  cc_emails text[],
+  subject text,
+  body_text text,
+  provider_draft_id text,
+  provider_message_id text,
+  review_required boolean not null default true,
+  reviewed_by uuid,
+  reviewed_at timestamptz,
+  sent_at timestamptz,
+  last_error text,
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint email_draft_status_chk check (
+    status in ('queued', 'drafted', 'reviewed', 'sent', 'failed', 'cancelled')
+  )
+);
+
+create index if not exists idx_email_draft_client_type
+  on onboarding.email_draft(onboarding_client_id, draft_type, created_at desc);
+
+create table if not exists onboarding.accelo_binding (
+  onboarding_client_id bigint primary key references onboarding.onboarding_client(id) on delete cascade,
+  company_id bigint,
+  contact_id bigint,
+  affiliation_id bigint,
+  contract_id bigint,
+  job_id bigint,
+  matched_source text not null default 'unknown',
+  last_read_synced_at timestamptz,
+  last_write_status text,
+  last_write_job_id bigint references onboarding.automation_job(id) on delete set null,
+  last_write_at timestamptz,
+  last_verified_at timestamptz,
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists onboarding.accelo_company_snapshot (
+  id bigint generated always as identity primary key,
+  onboarding_client_id bigint references onboarding.onboarding_client(id) on delete cascade,
+  company_directory_id bigint references onboarding.company_directory(id) on delete cascade,
+  public_company_id bigint,
+  snapshot_json jsonb not null default '{}'::jsonb,
+  imported_fields_json jsonb not null default '{}'::jsonb,
+  conflict_fields_json jsonb not null default '{}'::jsonb,
+  source_synced_at timestamptz,
+  created_by uuid,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_accelo_company_snapshot_company_directory
+  on onboarding.accelo_company_snapshot(company_directory_id, created_at desc);
+
+drop trigger if exists trg_integration_connection_updated_at on onboarding.integration_connection;
+create trigger trg_integration_connection_updated_at
+before update on onboarding.integration_connection
+for each row execute function onboarding.tg_set_updated_at();
+
+drop trigger if exists trg_automation_job_updated_at on onboarding.automation_job;
+create trigger trg_automation_job_updated_at
+before update on onboarding.automation_job
+for each row execute function onboarding.tg_set_updated_at();
+
+drop trigger if exists trg_workflow_state_updated_at on onboarding.workflow_state;
+create trigger trg_workflow_state_updated_at
+before update on onboarding.workflow_state
+for each row execute function onboarding.tg_set_updated_at();
+
+drop trigger if exists trg_email_draft_updated_at on onboarding.email_draft;
+create trigger trg_email_draft_updated_at
+before update on onboarding.email_draft
+for each row execute function onboarding.tg_set_updated_at();
+
+drop trigger if exists trg_accelo_binding_updated_at on onboarding.accelo_binding;
+create trigger trg_accelo_binding_updated_at
+before update on onboarding.accelo_binding
+for each row execute function onboarding.tg_set_updated_at();
+
+alter table onboarding.integration_connection enable row level security;
+alter table onboarding.automation_job enable row level security;
+alter table onboarding.workflow_state enable row level security;
+alter table onboarding.email_draft enable row level security;
+alter table onboarding.accelo_binding enable row level security;
+alter table onboarding.accelo_company_snapshot enable row level security;
+
+drop policy if exists integration_connection_internal_select_policy on onboarding.integration_connection;
+create policy integration_connection_internal_select_policy
+on onboarding.integration_connection
+for select
+using (onboarding.is_internal_user());
+
+drop policy if exists integration_connection_admin_modify_policy on onboarding.integration_connection;
+create policy integration_connection_admin_modify_policy
+on onboarding.integration_connection
+for all
+using (onboarding.is_admin_user())
+with check (onboarding.is_admin_user());
+
+drop policy if exists automation_job_internal_policy on onboarding.automation_job;
+create policy automation_job_internal_policy
+on onboarding.automation_job
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+drop policy if exists workflow_state_select_policy on onboarding.workflow_state;
+create policy workflow_state_select_policy
+on onboarding.workflow_state
+for select
+using (
+  onboarding.is_internal_user()
+  or onboarding.has_client_access(onboarding_client_id)
+);
+
+drop policy if exists workflow_state_internal_modify_policy on onboarding.workflow_state;
+create policy workflow_state_internal_modify_policy
+on onboarding.workflow_state
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+drop policy if exists email_draft_internal_policy on onboarding.email_draft;
+create policy email_draft_internal_policy
+on onboarding.email_draft
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+drop policy if exists accelo_binding_internal_policy on onboarding.accelo_binding;
+create policy accelo_binding_internal_policy
+on onboarding.accelo_binding
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+drop policy if exists accelo_company_snapshot_internal_policy on onboarding.accelo_company_snapshot;
+create policy accelo_company_snapshot_internal_policy
+on onboarding.accelo_company_snapshot
+for all
+using (onboarding.is_internal_user())
+with check (onboarding.is_internal_user());
+
+create or replace function onboarding.enqueue_automation_job(
+  p_onboarding_client_id bigint,
+  p_provider_code text,
+  p_action_code text,
+  p_idempotency_key text,
+  p_request_payload jsonb default '{}'::jsonb,
+  p_priority integer default 100,
+  p_scheduled_for timestamptz default now()
+)
+returns bigint
+language plpgsql
+security definer
+set search_path = onboarding, public
+as $$
+declare
+  v_job_id bigint;
+begin
+  if nullif(trim(coalesce(p_provider_code, '')), '') is null then
+    raise exception 'provider_code is required';
+  end if;
+  if nullif(trim(coalesce(p_action_code, '')), '') is null then
+    raise exception 'action_code is required';
+  end if;
+  if nullif(trim(coalesce(p_idempotency_key, '')), '') is null then
+    raise exception 'idempotency_key is required';
+  end if;
+
+  insert into onboarding.automation_job (
+    onboarding_client_id,
+    provider_code,
+    action_code,
+    idempotency_key,
+    request_payload,
+    priority,
+    scheduled_for,
+    created_by
+  )
+  values (
+    p_onboarding_client_id,
+    lower(trim(p_provider_code)),
+    lower(trim(p_action_code)),
+    lower(trim(p_idempotency_key)),
+    coalesce(p_request_payload, '{}'::jsonb),
+    coalesce(p_priority, 100),
+    coalesce(p_scheduled_for, now()),
+    auth.uid()
+  )
+  on conflict (provider_code, action_code, idempotency_key)
+  do update set
+    request_payload = onboarding.automation_job.request_payload || excluded.request_payload,
+    status = case
+      when onboarding.automation_job.status in ('failed', 'blocked', 'cancelled') then 'queued'
+      else onboarding.automation_job.status
+    end,
+    scheduled_for = least(onboarding.automation_job.scheduled_for, excluded.scheduled_for),
+    updated_at = now()
+  returning id into v_job_id;
+
+  return v_job_id;
+end;
+$$;
+
+create or replace function public.internal_list_integration_connections()
+returns jsonb
+language sql
+security definer
+set search_path = public, onboarding
+as $$
+  select case
+    when auth.uid() is null then
+      (select null::jsonb where false)
+    when not onboarding.is_internal_user() then
+      (select null::jsonb where false)
+    else coalesce(
+      (
+        select jsonb_agg(
+          jsonb_build_object(
+            'provider_code', c.provider_code,
+            'display_name', c.display_name,
+            'is_enabled', c.is_enabled,
+            'connection_status', c.connection_status,
+            'read_scope', c.read_scope,
+            'write_scope', c.write_scope,
+            'connected_account_label', c.connected_account_label,
+            'metadata_json', c.metadata_json,
+            'last_verified_at', c.last_verified_at,
+            'last_error', c.last_error,
+            'updated_at', c.updated_at
+          )
+          order by c.provider_code
+        )
+        from onboarding.integration_connection c
+      ),
+      '[]'::jsonb
+    )
+  end;
+$$;
+
+create or replace function public.internal_upsert_integration_connection(
+  p_provider_code text,
+  p_is_enabled boolean default null,
+  p_connection_status text default null,
+  p_connected_account_label text default null,
+  p_metadata_json jsonb default '{}'::jsonb,
+  p_last_error text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_provider_code text := lower(trim(coalesce(p_provider_code, '')));
+  v_row onboarding.integration_connection%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+  if not onboarding.is_admin_user() then
+    raise exception 'Admin access required' using errcode = '42501';
+  end if;
+  if v_provider_code = '' then
+    raise exception 'provider_code is required';
+  end if;
+
+  update onboarding.integration_connection c
+  set is_enabled = coalesce(p_is_enabled, c.is_enabled),
+      connection_status = coalesce(nullif(trim(coalesce(p_connection_status, '')), ''), c.connection_status),
+      connected_account_label = coalesce(nullif(trim(coalesce(p_connected_account_label, '')), ''), c.connected_account_label),
+      metadata_json = c.metadata_json || coalesce(p_metadata_json, '{}'::jsonb),
+      last_error = p_last_error,
+      last_verified_at = case when p_last_error is null then now() else c.last_verified_at end,
+      updated_at = now()
+  where c.provider_code = v_provider_code
+  returning * into v_row;
+
+  if not found then
+    raise exception 'Unknown provider_code: %', v_provider_code;
+  end if;
+
+  return to_jsonb(v_row) - 'id';
+end;
+$$;
+
+create or replace function public.internal_get_automation_queue_summary()
+returns jsonb
+language sql
+security definer
+set search_path = public, onboarding
+as $$
+  select case
+    when auth.uid() is null then
+      (select null::jsonb where false)
+    when not onboarding.is_internal_user() then
+      (select null::jsonb where false)
+    else jsonb_build_object(
+      'queued_count', count(*) filter (where status = 'queued'),
+      'running_count', count(*) filter (where status = 'running'),
+      'failed_count', count(*) filter (where status = 'failed'),
+      'blocked_count', count(*) filter (where status = 'blocked'),
+      'succeeded_count', count(*) filter (where status = 'succeeded'),
+      'oldest_queued_at', min(created_at) filter (where status = 'queued'),
+      'by_provider', coalesce(
+        (
+          select jsonb_agg(
+            jsonb_build_object(
+              'provider_code', provider_code,
+              'queued', queued_count,
+              'failed', failed_count,
+              'succeeded', succeeded_count
+            )
+            order by provider_code
+          )
+          from (
+            select
+              provider_code,
+              count(*) filter (where status = 'queued') as queued_count,
+              count(*) filter (where status = 'failed') as failed_count,
+              count(*) filter (where status = 'succeeded') as succeeded_count
+            from onboarding.automation_job
+            group by provider_code
+          ) p
+        ),
+        '[]'::jsonb
+      )
+    )
+  end
+  from onboarding.automation_job;
+$$;
+
+create or replace function public.internal_list_automation_jobs(
+  p_status text default null,
+  p_provider_code text default null,
+  p_limit integer default 100
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_limit integer := greatest(1, least(coalesce(p_limit, 100), 500));
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+  if not onboarding.is_internal_user() then
+    raise exception 'Internal access required' using errcode = '42501';
+  end if;
+
+  return coalesce(
+    (
+      select jsonb_agg(
+        jsonb_build_object(
+          'id', j.id,
+          'onboarding_client_id', j.onboarding_client_id,
+          'community_name', c.display_name,
+          'provider_code', j.provider_code,
+          'action_code', j.action_code,
+          'status', j.status,
+          'priority', j.priority,
+          'scheduled_for', j.scheduled_for,
+          'attempt_count', j.attempt_count,
+          'max_attempts', j.max_attempts,
+          'external_id', j.external_id,
+          'external_url', j.external_url,
+          'last_error', j.last_error,
+          'created_at', j.created_at,
+          'updated_at', j.updated_at
+        )
+        order by j.priority asc, j.scheduled_for asc, j.id asc
+      )
+      from (
+        select *
+        from onboarding.automation_job j
+        where (p_status is null or j.status = p_status)
+          and (p_provider_code is null or j.provider_code = lower(trim(p_provider_code)))
+        order by j.priority asc, j.scheduled_for asc, j.id asc
+        limit v_limit
+      ) j
+      left join onboarding.onboarding_client c on c.id = j.onboarding_client_id
+    ),
+    '[]'::jsonb
+  );
+end;
+$$;
+
+create or replace function public.internal_enqueue_automation_job(
+  p_onboarding_client_id bigint,
+  p_provider_code text,
+  p_action_code text,
+  p_idempotency_key text,
+  p_request_payload jsonb default '{}'::jsonb,
+  p_priority integer default 100,
+  p_scheduled_for timestamptz default now()
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_job_id bigint;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+  if not onboarding.is_internal_user() then
+    raise exception 'Internal access required' using errcode = '42501';
+  end if;
+
+  v_job_id := onboarding.enqueue_automation_job(
+    p_onboarding_client_id,
+    p_provider_code,
+    p_action_code,
+    p_idempotency_key,
+    p_request_payload,
+    p_priority,
+    p_scheduled_for
+  );
+
+  return jsonb_build_object('status', 'ok', 'job_id', v_job_id);
+end;
+$$;
+
+create or replace function public.internal_get_workflow_state(
+  p_onboarding_client_id bigint,
+  p_workflow_code text default 'launch'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_state jsonb;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+  if not onboarding.is_internal_user() then
+    raise exception 'Internal access required' using errcode = '42501';
+  end if;
+
+  select w.state_json
+  into v_state
+  from onboarding.workflow_state w
+  where w.onboarding_client_id = p_onboarding_client_id
+    and w.workflow_code = coalesce(nullif(trim(p_workflow_code), ''), 'launch');
+
+  return coalesce(v_state, '{}'::jsonb);
+end;
+$$;
+
+create or replace function public.internal_upsert_workflow_state(
+  p_onboarding_client_id bigint,
+  p_workflow_code text default 'launch',
+  p_state_json jsonb default '{}'::jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_workflow_code text := coalesce(nullif(trim(p_workflow_code), ''), 'launch');
+  v_state jsonb := coalesce(p_state_json, '{}'::jsonb);
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+  if not onboarding.is_internal_user() then
+    raise exception 'Internal access required' using errcode = '42501';
+  end if;
+
+  insert into onboarding.workflow_state (
+    onboarding_client_id,
+    workflow_code,
+    state_json,
+    updated_by,
+    updated_by_source
+  )
+  values (
+    p_onboarding_client_id,
+    v_workflow_code,
+    v_state,
+    auth.uid(),
+    'internal_portal'
+  )
+  on conflict (onboarding_client_id, workflow_code)
+  do update set
+    state_json = excluded.state_json,
+    updated_by = excluded.updated_by,
+    updated_by_source = excluded.updated_by_source,
+    updated_at = now();
+
+  return jsonb_build_object(
+    'status', 'ok',
+    'onboarding_client_id', p_onboarding_client_id,
+    'workflow_code', v_workflow_code,
+    'state_json', v_state
+  );
+end;
+$$;
+
+create or replace function public.get_my_workflow_state(
+  p_workflow_code text default 'launch'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_auth_user_id uuid := auth.uid();
+  v_onboarding_client_id bigint;
+  v_state jsonb;
+begin
+  if v_auth_user_id is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+
+  select m.onboarding_client_id
+  into v_onboarding_client_id
+  from onboarding.portal_user_company_access m
+  where m.auth_user_id = v_auth_user_id
+    and m.is_active = true
+  order by m.updated_at desc, m.id desc
+  limit 1;
+
+  if v_onboarding_client_id is null then
+    return '{}'::jsonb;
+  end if;
+
+  select w.state_json
+  into v_state
+  from onboarding.workflow_state w
+  where w.onboarding_client_id = v_onboarding_client_id
+    and w.workflow_code = coalesce(nullif(trim(p_workflow_code), ''), 'launch');
+
+  return coalesce(v_state, '{}'::jsonb);
+end;
+$$;
+
+create or replace function public.upsert_my_workflow_state(
+  p_workflow_code text default 'launch',
+  p_state_json jsonb default '{}'::jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_auth_user_id uuid := auth.uid();
+  v_onboarding_client_id bigint;
+  v_workflow_code text := coalesce(nullif(trim(p_workflow_code), ''), 'launch');
+begin
+  if v_auth_user_id is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+
+  select m.onboarding_client_id
+  into v_onboarding_client_id
+  from onboarding.portal_user_company_access m
+  where m.auth_user_id = v_auth_user_id
+    and m.is_active = true
+  order by m.updated_at desc, m.id desc
+  limit 1;
+
+  if v_onboarding_client_id is null then
+    raise exception 'No onboarding membership found for current user';
+  end if;
+
+  insert into onboarding.workflow_state (
+    onboarding_client_id,
+    workflow_code,
+    state_json,
+    updated_by,
+    updated_by_source
+  )
+  values (
+    v_onboarding_client_id,
+    v_workflow_code,
+    coalesce(p_state_json, '{}'::jsonb),
+    v_auth_user_id,
+    case when onboarding.is_internal_user() then 'internal_portal' else 'client_portal' end
+  )
+  on conflict (onboarding_client_id, workflow_code)
+  do update set
+    state_json = excluded.state_json,
+    updated_by = excluded.updated_by,
+    updated_by_source = excluded.updated_by_source,
+    updated_at = now();
+
+  return jsonb_build_object(
+    'status', 'ok',
+    'onboarding_client_id', v_onboarding_client_id,
+    'workflow_code', v_workflow_code
+  );
+end;
+$$;
+
+create or replace function public.internal_get_accelo_company_prefill(
+  p_company_directory_id bigint
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, onboarding
+as $$
+declare
+  v_row onboarding.accelo_company_enrichment_v%rowtype;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required' using errcode = '28000';
+  end if;
+  if not onboarding.is_internal_user() then
+    raise exception 'Internal access required' using errcode = '42501';
+  end if;
+
+  select *
+  into v_row
+  from onboarding.accelo_company_enrichment_v
+  where company_directory_id = p_company_directory_id;
+
+  if not found then
+    raise exception 'Company directory record not found';
+  end if;
+
+  return jsonb_build_object(
+    'company_directory_id', v_row.company_directory_id,
+    'public_company_id', v_row.public_company_id,
+    'company_name', v_row.directory_company_name,
+    'has_accelo_company', v_row.accelo_company_id is not null,
+    'prefill_fields', coalesce(v_row.prefill_fields, '{}'::jsonb),
+    'suggested_fields', coalesce(v_row.suggested_fields, '{}'::jsonb),
+    'admin_context', coalesce(v_row.admin_context, '{}'::jsonb),
+    'accelo', jsonb_build_object(
+      'company', jsonb_strip_nulls(jsonb_build_object(
+        'company_id', v_row.accelo_company_id,
+        'name', v_row.accelo_company_name,
+        'website_url', v_row.website_url,
+        'phone', v_row.company_phone,
+        'fax', v_row.company_fax,
+        'date_created', v_row.accelo_date_created,
+        'date_modified', v_row.accelo_date_modified,
+        'synced_at', v_row.accelo_synced_at,
+        'raw', v_row.company_raw_payload
+      )),
+      'postal_address', v_row.address_json,
+      'company_profile_values', v_row.company_profile_json,
+      'contacts', v_row.contacts_json,
+      'contracts', v_row.contracts_json,
+      'jobs', v_row.jobs_json,
+      'tasks', v_row.tasks_json
+    )
+  );
+end;
+$$;
+
+grant select, insert, update, delete on
+  onboarding.integration_connection,
+  onboarding.automation_job,
+  onboarding.workflow_state,
+  onboarding.email_draft,
+  onboarding.accelo_binding,
+  onboarding.accelo_company_snapshot
+to authenticated, service_role;
+
+grant execute on function onboarding.enqueue_automation_job(bigint, text, text, text, jsonb, integer, timestamptz) to authenticated, service_role;
+grant execute on function public.internal_list_integration_connections() to authenticated, service_role;
+grant execute on function public.internal_upsert_integration_connection(text, boolean, text, text, jsonb, text) to authenticated, service_role;
+grant execute on function public.internal_get_automation_queue_summary() to authenticated, service_role;
+grant execute on function public.internal_list_automation_jobs(text, text, integer) to authenticated, service_role;
+grant execute on function public.internal_enqueue_automation_job(bigint, text, text, text, jsonb, integer, timestamptz) to authenticated, service_role;
+grant execute on function public.internal_get_workflow_state(bigint, text) to authenticated, service_role;
+grant execute on function public.internal_upsert_workflow_state(bigint, text, jsonb) to authenticated, service_role;
+grant execute on function public.get_my_workflow_state(text) to authenticated, service_role;
+grant execute on function public.upsert_my_workflow_state(text, jsonb) to authenticated, service_role;
+grant execute on function public.internal_get_accelo_company_prefill(bigint) to authenticated, service_role;
 
 do $$
 begin

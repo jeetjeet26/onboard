@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "etl:accelo": "python accelo_etl.py",
+    "etl:accelo:full": "python accelo_etl.py --full",
     "check:sql-invariants": "node scripts/check-sql-invariants.mjs",
     "check:db-company-consistency": "node scripts/check-db-company-consistency.mjs"
   },

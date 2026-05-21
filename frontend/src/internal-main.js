@@ -1,5 +1,6 @@
 import {
   createInternalSignupInvite,
+  getAutomationQueueSummary,
   getCurrentSession,
   internalGetSyncQueueSummary,
   internalListCompanies,
@@ -23,6 +24,8 @@ const state = {
   companyPage: 0,
   companyPageSize: 50,
   companyTotal: 0,
+  companySortBy: "company_name",
+  companySortDir: "asc",
   openingCommunityId: null,
   creatingInvite: false,
 };
@@ -45,6 +48,13 @@ function formatDate(value) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function formatDateTime(value, fallback = "TBD") {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toLocaleString();
 }
 
 function toStageLabel(stageCode) {
@@ -232,7 +242,7 @@ function renderCompanies(rows) {
   if (!rows.length) {
     body.innerHTML = `
       <tr>
-        <td colspan="4" style="color:#767676;">No companies matched your filters.</td>
+        <td colspan="5" style="color:#767676;">No companies matched your filters.</td>
       </tr>
     `;
     return;
@@ -246,10 +256,9 @@ function renderCompanies(rows) {
         <tr data-company-directory-id="${escapeHtml(row.company_directory_id)}">
           <td>${escapeHtml(companyName)}</td>
           <td>${escapeHtml(String(row.community_count ?? 0))}</td>
+          <td>${escapeHtml(formatDateTime(row.date_added, "Unknown"))}</td>
           <td>${escapeHtml(
-            row.last_community_updated_at
-              ? new Date(row.last_community_updated_at).toLocaleString()
-              : "No communities yet"
+            formatDateTime(row.last_community_updated_at, "No communities yet")
           )}</td>
           <td>
             <button
@@ -273,6 +282,15 @@ function renderCompanies(rows) {
       `;
     })
     .join("");
+}
+
+function updateCompanySortHeaders() {
+  document.querySelectorAll("[data-company-sort]").forEach((button) => {
+    const isActive = button.dataset.companySort === state.companySortBy;
+    button.classList.toggle("active", isActive);
+    button.classList.toggle("asc", isActive && state.companySortDir === "asc");
+    button.classList.toggle("desc", isActive && state.companySortDir === "desc");
+  });
 }
 
 async function openCommunityDashboard(onboardingClientId, currentStage) {
@@ -337,11 +355,14 @@ async function loadCompanies() {
     search,
     limit: state.companyPageSize,
     offset: state.companyPage * state.companyPageSize,
+    sortBy: state.companySortBy,
+    sortDir: state.companySortDir,
   });
   const rows = Array.isArray(response?.items) ? response.items : [];
   state.companyTotal = Number(response?.total_count ?? rows.length);
   state.companyRows = rows;
   renderCompanies(rows);
+  updateCompanySortHeaders();
   renderPagination({
     targetId: "companyPagination",
     page: state.companyPage,
@@ -359,15 +380,35 @@ async function loadCompanies() {
   });
 }
 
+async function handleCompanySort(sortBy) {
+  if (!sortBy) return;
+  if (state.companySortBy === sortBy) {
+    state.companySortDir = state.companySortDir === "asc" ? "desc" : "asc";
+  } else {
+    state.companySortBy = sortBy;
+    state.companySortDir = sortBy === "date_added" || sortBy === "last_community_updated_at"
+      ? "desc"
+      : "asc";
+  }
+  state.companyPage = 0;
+  updateCompanySortHeaders();
+  await loadCompanies();
+}
+
 async function refreshSyncQueueSummary() {
   try {
-    const summary = await internalGetSyncQueueSummary();
+    const [summary, automation] = await Promise.all([
+      internalGetSyncQueueSummary(),
+      getAutomationQueueSummary(),
+    ]);
     const queued = Number(summary?.queued_count || 0);
     const failed = Number(summary?.failed_count || 0);
     const processed = Number(summary?.processed_count || 0);
+    const automationQueued = Number(automation?.queued_count || 0);
+    const automationFailed = Number(automation?.failed_count || 0) + Number(automation?.blocked_count || 0);
     setSyncStatus(
-      `Backend sync: ${queued} pending · ${failed} failed · ${processed} completed`,
-      failed > 0 ? "error" : ""
+      `Backend sync: ${queued} pending · ${failed} failed · ${processed} completed. Automations: ${automationQueued} queued · ${automationFailed} failed/blocked`,
+      failed > 0 || automationFailed > 0 ? "error" : ""
     );
   } catch (error) {
     setSyncStatus(`Unable to read sync queue summary: ${error.message}`, "error");
@@ -592,6 +633,16 @@ function bindHandlers() {
     } catch (error) {
       console.error(error);
     }
+  });
+
+  document.querySelectorAll("[data-company-sort]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await handleCompanySort(button.dataset.companySort);
+      } catch (error) {
+        setAuthMessage(error.message, "error");
+      }
+    });
   });
 
   document.getElementById("companyBody")?.addEventListener("click", (event) => {

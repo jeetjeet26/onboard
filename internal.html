@@ -403,6 +403,32 @@
         color: var(--gray);
       }
 
+      .sortable-th {
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-transform: inherit;
+        letter-spacing: inherit;
+        cursor: pointer;
+      }
+
+      .sortable-th::after {
+        content: " ↕";
+        color: var(--gray);
+      }
+
+      .sortable-th.active.asc::after {
+        content: " ↑";
+        color: var(--red);
+      }
+
+      .sortable-th.active.desc::after {
+        content: " ↓";
+        color: var(--red);
+      }
+
       .pill {
         display: inline-block;
         font-size: 10px;
@@ -575,9 +601,10 @@
           <table>
             <thead>
               <tr>
-                <th>Company</th>
-                <th>Communities</th>
-                <th>Last Community Update</th>
+                <th><button class="sortable-th active asc" type="button" data-company-sort="company_name">Company</button></th>
+                <th><button class="sortable-th" type="button" data-company-sort="community_count">Communities</button></th>
+                <th><button class="sortable-th" type="button" data-company-sort="date_added">Date Added</button></th>
+                <th><button class="sortable-th" type="button" data-company-sort="last_community_updated_at">Last Community Update</button></th>
                 <th>Actions</th>
               </tr>
             </thead>

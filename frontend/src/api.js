@@ -309,11 +309,15 @@ export async function internalListCompanies({
   search = "",
   limit = 200,
   offset = 0,
+  sortBy = "company_name",
+  sortDir = "asc",
 } = {}) {
   const { data, error } = await supabase.rpc("internal_list_companies", {
     p_search: search || null,
     p_limit: limit,
     p_offset: offset,
+    p_sort_by: sortBy,
+    p_sort_dir: sortDir,
   });
 
   if (error) {
@@ -358,6 +362,23 @@ export async function internalGetClientDetail(onboardingClientId) {
   return data;
 }
 
+export async function internalGetAcceloCompanyPrefill(companyDirectoryId) {
+  const numericId = Number(companyDirectoryId);
+  if (!numericId) {
+    throw new Error("Valid company directory ID is required.");
+  }
+
+  const { data, error } = await supabase.rpc("internal_get_accelo_company_prefill", {
+    p_company_directory_id: numericId,
+  });
+
+  if (error) {
+    throw new Error(`Accelo prefill fetch failed: ${error.message}`);
+  }
+
+  return data || {};
+}
+
 export async function internalUpsertClientInfo(payload = {}) {
   const { data, error } = await supabase.rpc("internal_upsert_client_info", {
     p_onboarding_client_id: payload.onboardingClientId ?? null,
@@ -387,6 +408,110 @@ export async function internalUpsertClientInfo(payload = {}) {
     throw new Error(`Internal client save failed: ${error.message}`);
   }
 
+  return data;
+}
+
+export async function listIntegrationConnections() {
+  const { data, error } = await supabase.rpc("internal_list_integration_connections");
+  if (error) {
+    throw new Error(`Integration status fetch failed: ${error.message}`);
+  }
+  return Array.isArray(data) ? data : [];
+}
+
+export async function getAutomationQueueSummary() {
+  const { data, error } = await supabase.rpc("internal_get_automation_queue_summary");
+  if (error) {
+    throw new Error(`Automation summary fetch failed: ${error.message}`);
+  }
+  return data || {};
+}
+
+export async function listAutomationJobs({
+  status = null,
+  providerCode = null,
+  limit = 100,
+} = {}) {
+  const { data, error } = await supabase.rpc("internal_list_automation_jobs", {
+    p_status: status,
+    p_provider_code: providerCode,
+    p_limit: limit,
+  });
+  if (error) {
+    throw new Error(`Automation jobs fetch failed: ${error.message}`);
+  }
+  return Array.isArray(data) ? data : [];
+}
+
+export async function enqueueAutomationJob({
+  onboardingClientId = null,
+  providerCode,
+  actionCode,
+  idempotencyKey,
+  requestPayload = {},
+  priority = 100,
+  scheduledFor = null,
+}) {
+  const { data, error } = await supabase.rpc("internal_enqueue_automation_job", {
+    p_onboarding_client_id: onboardingClientId,
+    p_provider_code: providerCode,
+    p_action_code: actionCode,
+    p_idempotency_key: idempotencyKey,
+    p_request_payload: requestPayload,
+    p_priority: priority,
+    p_scheduled_for: scheduledFor,
+  });
+  if (error) {
+    throw new Error(`Automation enqueue failed: ${error.message}`);
+  }
+  return data;
+}
+
+export async function getMyWorkflowState(workflowCode = "launch") {
+  const { data, error } = await supabase.rpc("get_my_workflow_state", {
+    p_workflow_code: workflowCode,
+  });
+  if (error) {
+    throw new Error(`Workflow state fetch failed: ${error.message}`);
+  }
+  return data || {};
+}
+
+export async function upsertMyWorkflowState(workflowCode = "launch", stateJson = {}) {
+  const { data, error } = await supabase.rpc("upsert_my_workflow_state", {
+    p_workflow_code: workflowCode,
+    p_state_json: stateJson,
+  });
+  if (error) {
+    throw new Error(`Workflow state save failed: ${error.message}`);
+  }
+  return data;
+}
+
+export async function internalGetWorkflowState(onboardingClientId, workflowCode = "launch") {
+  const { data, error } = await supabase.rpc("internal_get_workflow_state", {
+    p_onboarding_client_id: onboardingClientId,
+    p_workflow_code: workflowCode,
+  });
+  if (error) {
+    throw new Error(`Internal workflow state fetch failed: ${error.message}`);
+  }
+  return data || {};
+}
+
+export async function internalUpsertWorkflowState({
+  onboardingClientId,
+  workflowCode = "launch",
+  stateJson = {},
+}) {
+  const { data, error } = await supabase.rpc("internal_upsert_workflow_state", {
+    p_onboarding_client_id: onboardingClientId,
+    p_workflow_code: workflowCode,
+    p_state_json: stateJson,
+  });
+  if (error) {
+    throw new Error(`Internal workflow state save failed: ${error.message}`);
+  }
   return data;
 }
 

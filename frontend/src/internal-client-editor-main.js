@@ -5,6 +5,7 @@ import {
   getCurrentSession,
   getDropboxStatus,
   getInternalPortalContext,
+  internalGetAcceloCompanyPrefill,
   internalClearDropboxBinding,
   internalGetClientDetail,
   internalGetDropboxBinding,
@@ -26,6 +27,8 @@ const state = {
   dropboxStatus: null,
   dropboxBinding: null,
   creatingClientInvite: false,
+  acceloPrefill: null,
+  selectedAcceloCandidateKey: null,
 };
 
 function escapeHtml(value) {
@@ -93,6 +96,7 @@ function setSelectedCompany(company = null) {
   if (!label) return;
   if (!company) {
     label.textContent = "";
+    clearAcceloEnrichment();
     return;
   }
   const name = company.company_name || "Unnamed Company";
@@ -126,6 +130,234 @@ function setClientInviteEnabled(enabled) {
   const copy = byId("copyClientInviteBtn");
   if (submit) submit.disabled = !enabled;
   if (copy) copy.disabled = !byId("clientInviteLink")?.value;
+}
+
+function fillIfEmpty(id, value) {
+  const target = byId(id);
+  if (!target) return false;
+  const next = String(value ?? "").trim();
+  if (!next || String(target.value || "").trim()) return false;
+  target.value = next;
+  return true;
+}
+
+function toHumanLabel(value) {
+  return String(value || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function summarizeArray(values = [], limit = 5) {
+  const source = Array.isArray(values) ? values : [];
+  const cleaned = source.map((value) => String(value || "").trim()).filter(Boolean);
+  if (!cleaned.length) return "None found";
+  const visible = cleaned.slice(0, limit);
+  const suffix = cleaned.length > limit ? ` +${cleaned.length - limit} more` : "";
+  return `${visible.join(", ")}${suffix}`;
+}
+
+function renderKeyValues(source = {}, limit = 8) {
+  const entries = Object.entries(source || {})
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .slice(0, limit);
+  if (!entries.length) return "<li>None found</li>";
+  return entries
+    .map(([key, value]) => {
+      const displayValue = Array.isArray(value)
+        ? summarizeArray(value)
+        : typeof value === "object"
+          ? JSON.stringify(value)
+          : String(value);
+      return `<li><strong>${escapeHtml(toHumanLabel(key))}:</strong> ${escapeHtml(displayValue)}</li>`;
+    })
+    .join("");
+}
+
+function clearAcceloEnrichment() {
+  byId("acceloEnrichmentCard")?.classList.add("empty");
+  const grid = byId("acceloEnrichmentGrid");
+  if (grid) grid.innerHTML = "";
+  state.acceloPrefill = null;
+  state.selectedAcceloCandidateKey = null;
+}
+
+function candidateKey(candidate) {
+  return `${candidate.type}:${candidate.id}`;
+}
+
+function getAcceloCandidates(prefill = {}) {
+  const contracts = Array.isArray(prefill?.accelo?.contracts) ? prefill.accelo.contracts : [];
+  const jobs = Array.isArray(prefill?.accelo?.jobs) ? prefill.accelo.jobs : [];
+  const jobCandidates = jobs.map((job) => ({
+    type: "job",
+    id: job.job_id,
+    title: job.title,
+    status: job.status,
+    serviceCategory: job.profile_values?.["Service Category"],
+    serviceSubcategory:
+      job.profile_values?.["Service Subcategory"] ||
+      job.profile_values?.["Service Sub-Category (old)"],
+    profileValues: job.profile_values || {},
+  }));
+  const contractCandidates = contracts.map((contract) => ({
+    type: "contract",
+    id: contract.contract_id,
+    title: contract.title,
+    status: contract.status,
+    serviceCategory: contract.profile_values?.["Service Type"],
+    serviceSubcategory: contract.profile_values?.["Service Subcategory"],
+    profileValues: contract.profile_values || {},
+  }));
+  return [...jobCandidates, ...contractCandidates].filter((candidate) => candidate.id || candidate.title);
+}
+
+function renderAcceloCandidates(prefill = {}) {
+  const candidates = getAcceloCandidates(prefill);
+  if (!candidates.length) return "<div style=\"color:var(--gray);\">No job/contract candidates found.</div>";
+  return `<div class="accelo-candidate-list">${candidates
+    .slice(0, 12)
+    .map((candidate) => {
+      const key = candidateKey(candidate);
+      const active = key === state.selectedAcceloCandidateKey ? " active" : "";
+      const meta = [
+        candidate.type.toUpperCase(),
+        candidate.status,
+        candidate.serviceCategory,
+        candidate.serviceSubcategory,
+      ].filter(Boolean).join(" · ");
+      return `
+        <button class="accelo-candidate-btn${active}" type="button" data-accelo-candidate-key="${escapeHtml(key)}">
+          <div class="accelo-candidate-title">${escapeHtml(candidate.title || `${candidate.type} ${candidate.id}`)}</div>
+          <div class="accelo-candidate-meta">${escapeHtml(meta || `ID ${candidate.id}`)}</div>
+        </button>
+      `;
+    })
+    .join("")}</div>`;
+}
+
+function applyAcceloCandidate(candidate) {
+  if (!candidate) return;
+  state.selectedAcceloCandidateKey = candidateKey(candidate);
+  fillIfEmpty("communityName", candidate.title);
+  const serviceText = [candidate.serviceCategory, candidate.serviceSubcategory]
+    .filter(Boolean)
+    .join(" / ");
+  const candidateNotes = [
+    `Accelo ${candidate.type} ID: ${candidate.id}`,
+    candidate.status ? `Status: ${candidate.status}` : "",
+    serviceText ? `Service: ${serviceText}` : "",
+  ].filter(Boolean).join("\n");
+  fillIfEmpty("technicalNotes", candidateNotes);
+  renderAcceloEnrichment(state.acceloPrefill || {}, 0);
+  setStatus(`Applied Accelo ${candidate.type} candidate: ${candidate.title || candidate.id}.`, "success");
+}
+
+function renderAcceloEnrichment(prefill = {}, filled = 0) {
+  const card = byId("acceloEnrichmentCard");
+  const grid = byId("acceloEnrichmentGrid");
+  if (!card || !grid) return;
+
+  const suggested = prefill.suggested_fields || {};
+  const admin = prefill.admin_context || {};
+  const contacts = Array.isArray(prefill?.accelo?.contacts) ? prefill.accelo.contacts : [];
+  const contracts = Array.isArray(prefill?.accelo?.contracts) ? prefill.accelo.contracts : [];
+  const jobs = Array.isArray(prefill?.accelo?.jobs) ? prefill.accelo.jobs : [];
+  const tasks = Array.isArray(prefill?.accelo?.tasks) ? prefill.accelo.tasks : [];
+
+  grid.innerHTML = `
+    <div class="accelo-enrichment-section">
+      <div class="k">Prefilled</div>
+      <ul><li>${escapeHtml(String(filled))} empty onboarding field${filled === 1 ? "" : "s"} filled</li></ul>
+    </div>
+    <div class="accelo-enrichment-section">
+      <div class="k">Suggested fields</div>
+      <ul>${renderKeyValues(suggested)}</ul>
+    </div>
+    <div class="accelo-enrichment-section">
+      <div class="k">Accelo records</div>
+      <ul>
+        <li>${contacts.length} contact${contacts.length === 1 ? "" : "s"}</li>
+        <li>${contracts.length} contract${contracts.length === 1 ? "" : "s"}</li>
+        <li>${jobs.length} job${jobs.length === 1 ? "" : "s"}</li>
+        <li>${tasks.length} task${tasks.length === 1 ? "" : "s"}</li>
+      </ul>
+    </div>
+    <div class="accelo-enrichment-section">
+      <div class="k">Community / property candidates</div>
+      ${renderAcceloCandidates(prefill)}
+    </div>
+    <div class="accelo-enrichment-section">
+      <div class="k">Services</div>
+      <ul>
+        <li><strong>Contract:</strong> ${escapeHtml(summarizeArray(suggested.selected_services))}</li>
+        <li><strong>Job categories:</strong> ${escapeHtml(summarizeArray(suggested.job_service_categories))}</li>
+        <li><strong>Subcategories:</strong> ${escapeHtml(summarizeArray(suggested.job_service_subcategories))}</li>
+      </ul>
+    </div>
+    <div class="accelo-enrichment-section">
+      <div class="k">Staff-only context</div>
+      <ul>${renderKeyValues(admin, 6)}</ul>
+    </div>
+    <div class="accelo-enrichment-section">
+      <div class="k">Recent records</div>
+      <ul>
+        <li><strong>Contract:</strong> ${escapeHtml(suggested.recent_contract_title || "None found")}</li>
+        <li><strong>Job:</strong> ${escapeHtml(suggested.recent_job_title || "None found")}</li>
+      </ul>
+    </div>
+  `;
+  card.classList.remove("empty");
+}
+
+function formatAcceloContext(prefill = {}) {
+  const contacts = Array.isArray(prefill?.accelo?.contacts)
+    ? prefill.accelo.contacts.length
+    : 0;
+  const contracts = Array.isArray(prefill?.accelo?.contracts)
+    ? prefill.accelo.contracts.length
+    : 0;
+  const jobs = Array.isArray(prefill?.accelo?.jobs)
+    ? prefill.accelo.jobs.length
+    : 0;
+  const parts = [];
+  if (contacts) parts.push(`${contacts} contact${contacts === 1 ? "" : "s"}`);
+  if (contracts) parts.push(`${contracts} contract${contracts === 1 ? "" : "s"}`);
+  if (jobs) parts.push(`${jobs} job${jobs === 1 ? "" : "s"}`);
+  return parts.length ? ` Found ${parts.join(", ")} in Accelo.` : "";
+}
+
+async function applyAcceloPrefill(companyDirectoryId, { fillEmptyFields = true } = {}) {
+  const numericId = Number(companyDirectoryId);
+  if (!numericId) return;
+
+  try {
+    setStatus("Pulling Accelo context for this company...");
+    const prefill = await internalGetAcceloCompanyPrefill(numericId);
+    state.acceloPrefill = prefill;
+    const suggested = prefill?.prefill_fields || prefill?.suggested_fields || {};
+    const filled = fillEmptyFields
+      ? [
+          fillIfEmpty("communityName", suggested.community_name),
+          fillIfEmpty("communityPhone", suggested.community_phone),
+          fillIfEmpty("websiteUrl", suggested.website_url),
+          fillIfEmpty("communityAddress", suggested.community_address),
+          fillIfEmpty("propertyType", suggested.property_type),
+          fillIfEmpty("parentCompany", suggested.parent_company),
+          fillIfEmpty("reportingPrimaryName", suggested.reporting_primary_name),
+          fillIfEmpty("reportingPrimaryEmail", suggested.reporting_primary_email),
+        ].filter(Boolean).length
+      : 0;
+
+    renderAcceloEnrichment(prefill, filled);
+    setStatus(
+      fillEmptyFields
+        ? `Company selected. ${filled} field${filled === 1 ? "" : "s"} prefilled from Accelo.${formatAcceloContext(prefill)}`
+        : `Accelo enrichment loaded for existing community.${formatAcceloContext(prefill)}`,
+      "success"
+    );
+  } catch (error) {
+    setStatus(`Company selected, but Accelo prefill failed: ${error.message}`, "error");
+  }
 }
 
 function applyDetailToForm(detail) {
@@ -163,6 +395,12 @@ function applyDetailToForm(detail) {
   setValue("conversionActions", detail.conversion_actions);
   setValue("technicalNotes", detail.technical_notes);
   setValue("finalNotes", detail.final_notes);
+
+  if (detail.company_directory_id) {
+    applyAcceloPrefill(detail.company_directory_id, { fillEmptyFields: false }).catch((error) => {
+      setStatus(`Client loaded, but Accelo enrichment failed: ${error.message}`, "error");
+    });
+  }
 
   refreshDropboxBinding({ silent: true }).catch((error) => {
     console.warn("Dropbox binding load failed:", error.message);
@@ -758,6 +996,16 @@ function bindHandlers() {
   byId("clientInviteForm")?.addEventListener("submit", handleCreateClientInvite);
   byId("companySearchBtn")?.addEventListener("click", handleCompanySearch);
   byId("openOnboardingBtn")?.addEventListener("click", handleOpenOnboarding);
+  byId("refreshAcceloEnrichmentBtn")?.addEventListener("click", () => {
+    const companyDirectoryId = state.selectedCompany?.company_directory_id;
+    if (!companyDirectoryId) {
+      setStatus("Select or save a company before refreshing Accelo enrichment.", "error");
+      return;
+    }
+    applyAcceloPrefill(companyDirectoryId, { fillEmptyFields: !state.clientId }).catch((error) => {
+      setStatus(`Accelo enrichment failed: ${error.message}`, "error");
+    });
+  });
 
   byId("copyClientInviteBtn")?.addEventListener("click", async () => {
     const linkOutput = byId("clientInviteLink");
@@ -782,6 +1030,15 @@ function bindHandlers() {
     await handleCompanySearch();
   });
 
+  byId("acceloEnrichmentCard")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-accelo-candidate-key]");
+    if (!button || !state.acceloPrefill) return;
+    const key = button.dataset.acceloCandidateKey || "";
+    const candidate = getAcceloCandidates(state.acceloPrefill)
+      .find((item) => candidateKey(item) === key);
+    applyAcceloCandidate(candidate);
+  });
+
   byId("companyResults")?.addEventListener("click", (event) => {
     const button = event.target.closest(".company-result-btn");
     if (!button) return;
@@ -797,7 +1054,9 @@ function bindHandlers() {
       company_name: companyName || null,
     });
     renderCompanyResults([]);
-    setStatus("Company selected.");
+    applyAcceloPrefill(companyDirectoryId).catch((error) => {
+      setStatus(`Company selected, but Accelo prefill failed: ${error.message}`, "error");
+    });
   });
 }
 
@@ -832,7 +1091,11 @@ async function initialize() {
       if (preselectedCompany.company_name) {
         setValue("companyNameOverride", preselectedCompany.company_name);
       }
-      setStatus("Company preselected. Fill in community details and save.");
+      if (preselectedCompany.company_directory_id) {
+        await applyAcceloPrefill(preselectedCompany.company_directory_id);
+      } else {
+        setStatus("Company preselected. Fill in community details and save.");
+      }
     }
   }
 
