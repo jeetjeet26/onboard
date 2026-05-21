@@ -655,7 +655,9 @@ select.fi { cursor: pointer; }
 
 /* view control */
 [data-view="internal"] { display: none; }
-body.int [data-view="client"]   { display: none; }
+body.int [data-view="client"]   { display: block; }
+body.int [data-view="client"] > * { display: none; }
+body.int [data-view="client"] > .q-card { display: block; }
 body.int [data-view="internal"] { display: block; }
 body.auth-pending .client-bar,
 body.auth-pending .main,
