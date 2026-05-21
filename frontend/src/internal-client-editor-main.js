@@ -141,6 +141,31 @@ function fillIfEmpty(id, value) {
   return true;
 }
 
+function appendIfMissing(id, value) {
+  const target = byId(id);
+  if (!target) return false;
+  const next = String(value ?? "").trim();
+  if (!next) return false;
+  const current = String(target.value || "").trim();
+  if (current.includes(next)) return false;
+  target.value = current ? `${current}\n\n${next}` : next;
+  return true;
+}
+
+function applyAcceloPrefillFields(prefill = {}) {
+  const suggested = prefill?.prefill_fields || prefill?.suggested_fields || {};
+  return [
+    fillIfEmpty("communityName", suggested.community_name),
+    fillIfEmpty("communityPhone", suggested.community_phone),
+    fillIfEmpty("websiteUrl", suggested.website_url),
+    fillIfEmpty("communityAddress", suggested.community_address),
+    fillIfEmpty("propertyType", suggested.property_type),
+    fillIfEmpty("parentCompany", suggested.parent_company),
+    fillIfEmpty("reportingPrimaryName", suggested.reporting_primary_name),
+    fillIfEmpty("reportingPrimaryEmail", suggested.reporting_primary_email),
+  ].filter(Boolean).length;
+}
+
 function toHumanLabel(value) {
   return String(value || "")
     .replace(/_/g, " ")
@@ -247,9 +272,9 @@ function applyAcceloCandidate(candidate) {
     candidate.status ? `Status: ${candidate.status}` : "",
     serviceText ? `Service: ${serviceText}` : "",
   ].filter(Boolean).join("\n");
-  fillIfEmpty("technicalNotes", candidateNotes);
+  appendIfMissing("technicalNotes", candidateNotes);
   renderAcceloEnrichment(state.acceloPrefill || {}, 0);
-  setStatus(`Applied Accelo ${candidate.type} candidate: ${candidate.title || candidate.id}.`, "success");
+  setStatus(`Applied Accelo ${candidate.type} candidate: ${candidate.title || candidate.id}. Save the community to keep it.`, "success");
 }
 
 function renderAcceloEnrichment(prefill = {}, filled = 0) {
@@ -334,19 +359,7 @@ async function applyAcceloPrefill(companyDirectoryId, { fillEmptyFields = true }
     setStatus("Pulling Accelo context for this company...");
     const prefill = await internalGetAcceloCompanyPrefill(numericId);
     state.acceloPrefill = prefill;
-    const suggested = prefill?.prefill_fields || prefill?.suggested_fields || {};
-    const filled = fillEmptyFields
-      ? [
-          fillIfEmpty("communityName", suggested.community_name),
-          fillIfEmpty("communityPhone", suggested.community_phone),
-          fillIfEmpty("websiteUrl", suggested.website_url),
-          fillIfEmpty("communityAddress", suggested.community_address),
-          fillIfEmpty("propertyType", suggested.property_type),
-          fillIfEmpty("parentCompany", suggested.parent_company),
-          fillIfEmpty("reportingPrimaryName", suggested.reporting_primary_name),
-          fillIfEmpty("reportingPrimaryEmail", suggested.reporting_primary_email),
-        ].filter(Boolean).length
-      : 0;
+    const filled = fillEmptyFields ? applyAcceloPrefillFields(prefill) : 0;
 
     renderAcceloEnrichment(prefill, filled);
     setStatus(
@@ -1005,6 +1018,24 @@ function bindHandlers() {
     applyAcceloPrefill(companyDirectoryId, { fillEmptyFields: !state.clientId }).catch((error) => {
       setStatus(`Accelo enrichment failed: ${error.message}`, "error");
     });
+  });
+  byId("applyAcceloEmptyFieldsBtn")?.addEventListener("click", async () => {
+    const companyDirectoryId = state.selectedCompany?.company_directory_id;
+    if (!companyDirectoryId && !state.acceloPrefill) {
+      setStatus("Select a company before applying Accelo enrichment.", "error");
+      return;
+    }
+    if (!state.acceloPrefill && companyDirectoryId) {
+      await applyAcceloPrefill(companyDirectoryId, { fillEmptyFields: false });
+    }
+    const filled = applyAcceloPrefillFields(state.acceloPrefill || {});
+    renderAcceloEnrichment(state.acceloPrefill || {}, filled);
+    setStatus(
+      filled
+        ? `Applied ${filled} empty field${filled === 1 ? "" : "s"} from Accelo. Save the community to keep changes.`
+        : "No empty fields were available to fill from Accelo.",
+      filled ? "success" : ""
+    );
   });
 
   byId("copyClientInviteBtn")?.addEventListener("click", async () => {
